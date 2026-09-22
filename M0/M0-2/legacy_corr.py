@@ -1,6 +1,6 @@
 import csv
 import yaml
-
+import math
 
 CONFIG_PATH = "config.yaml"
 
@@ -48,7 +48,7 @@ def calculate_correlation(xs, ys):
         dx += a * a
         dy += b * b
         prod += a * b
-    denom = dx * dy
+    denom = math.sqrt(dx * dy)
     r = prod / denom
 
     return n, mean_x, mean_y, r
