@@ -19,10 +19,31 @@ sensor_analyzer.py  —— 上一届学长留下的"能用"的脚本
 import csv
 import os
 import math
+import argparse
 
-INPUT_FILE = "sensor_data.csv"
-OUTPUT_FILE = "cleaned_data.csv"
-OUTPUT_DIR = "out"  # 输出目录
+DEFAULT_INPUT = "sensor_data.csv"
+DEFAULT_OUTPUT = "cleaned_data.csv"
+# --- 路径处理 ---
+parser = argparse.ArgumentParser(
+    description="Analyze and clean sensor data"
+)
+
+parser.add_argument(
+    "--input",
+    default=DEFAULT_INPUT,
+    help="input CSV file"
+)
+
+parser.add_argument(
+    "--output",
+    default=DEFAULT_OUTPUT,
+    help="output CSV file"
+)
+
+args = parser.parse_args()
+
+input_path = args.input
+output_path = args.output
 
 data = []
 times = []
@@ -31,7 +52,7 @@ cleaned = []
 print("=== 传感器数据分析 ===")
 
 # --- 读取数据 ---
-reader = csv.DictReader(open(INPUT_FILE, "r"))
+reader = csv.DictReader(open(input_path, "r"))
 
 for row in reader:
     t = float(row["time"])
@@ -59,8 +80,7 @@ for t, v in zip(times, data):
         cleaned.append((t, v))
 
 # --- 输出清洗后的数据 ---
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-output_path = os.path.join(OUTPUT_DIR, OUTPUT_FILE)
+f = open(output_path, "w", newline="")
 f = open(output_path, "w")
 writer = csv.writer(f)
 writer.writerow(["time", "value"])
