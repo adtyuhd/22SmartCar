@@ -113,12 +113,11 @@ for t, v in zip(times, data):
 
 # --- 输出清洗后的数据 ---
 f = open(output_path, "w", newline="")
-f = open(output_path, "w")
 writer = csv.writer(f)
 writer.writerow(["time", "value"])
 for t,v in cleaned:
     writer.writerow([t,v])
-
+f.close()
 print("均值 mean = %.4f" % mean)
 print("标准差 std = %.4f" % std)
 print("清洗后剩余 %d 条" % len(cleaned))
