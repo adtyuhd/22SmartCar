@@ -20,6 +20,7 @@ import csv
 import os
 import math
 import argparse
+import sys
 
 DEFAULT_INPUT = "sensor_data.csv"
 DEFAULT_OUTPUT = "cleaned_data.csv"
@@ -52,13 +53,44 @@ cleaned = []
 print("=== 传感器数据分析 ===")
 
 # --- 读取数据 ---
-reader = csv.DictReader(open(input_path, "r"))
+try:
+    f = open(input_path, "r")
+except FileNotFoundError:
+    print("Error: 输入文件不存在:", input_path)
+    sys.exit(1)
 
-for row in reader:
-    t = float(row["time"])
-    v = float(row["value"])
+reader = csv.DictReader(f)
+
+# 空文件：连表头都没有
+if reader.fieldnames is None:
+    print("Error: 输入文件为空")
+    f.close()
+    sys.exit(1)
+
+# 检查列名
+if "time" not in reader.fieldnames or "value" not in reader.fieldnames:
+    print("Error: CSV 必须包含 time 和 value 两列")
+    f.close()
+    sys.exit(1)
+
+for line_number, row in enumerate(reader, start=2):
+    try:
+        t = float(row["time"])
+        v = float(row["value"])
+    except (ValueError, TypeError):
+        print("Error: 第 %d 行包含非数值内容" % line_number)
+        f.close()
+        sys.exit(1)
+
     times.append(t)
     data.append(v)
+
+f.close()
+
+# 有表头，但没有任何数据行
+if len(data) == 0:
+    print("Error: CSV 没有数据")
+    sys.exit(1)
 
 print("共读取 %d 条数据" % len(data))
 
