@@ -1,7 +1,7 @@
 import argparse
 import json
 from pathlib import Path
-
+import sys
 import yaml
 
 
@@ -140,4 +140,21 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+
+    except FileNotFoundError as e:
+        print(f"Error: config file not found: {e.filename}")
+        sys.exit(1)
+
+    except yaml.YAMLError as e:
+        print(f"Error: invalid YAML: {e}")
+        sys.exit(1)
+
+    except json.JSONDecodeError as e:
+        print(f"Error: invalid JSON: {e}")
+        sys.exit(1)
+
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
