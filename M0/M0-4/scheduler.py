@@ -21,6 +21,19 @@ def parse_args():
     )
 
     parser.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        help="global timeout in seconds, overrides config timeout",
+    )
+
+    parser.add_argument(
+        "--report",
+        default="report.json",
+        help="report output path (default: report.json)",
+    )
+
+    parser.add_argument(
         "--seed",
         type=int,
         default=None,
