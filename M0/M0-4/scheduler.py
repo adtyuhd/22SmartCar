@@ -286,6 +286,7 @@ def run_task(
         max_attempts + 1,
     ):
 
+        # 每次尝试开始之前检查 timeout
         if is_timeout(
             program_start,
             timeout,
@@ -297,6 +298,7 @@ def run_task(
                 ended_at,
             )
 
+        # 第一次真正开始执行任务时记录时间
         if started_at is None:
             started_at = time.time()
 
@@ -305,10 +307,13 @@ def run_task(
             f"attempt {attempt}"
         )
 
+        # 模拟任务执行
         time.sleep(duration)
 
+        # 每次尝试结束时更新时间
         ended_at = time.time()
 
+        # sleep 后马上检查 timeout
         if is_timeout(
             program_start,
             timeout,
@@ -351,6 +356,7 @@ def run_task(
                 "RETRY",
             )
 
+    # 三次都失败
     return (
         "SKIPPED",
         max_attempts,
@@ -380,15 +386,19 @@ def write_report(path, report):
 def main():
     args = parse_args()
 
+    # 设置随机种子
     if args.seed is not None:
         random.seed(args.seed)
 
+    # 读取配置
     config = load_config(
         args.config
     )
 
+    # 检查配置
     validate_config(config)
 
+    # 命令行 timeout 优先于配置文件 timeout
     if args.timeout is not None:
         if args.timeout <= 0:
             raise ValueError(
@@ -403,10 +413,12 @@ def main():
             "timeout"
         )
 
+    # 根据依赖关系进行拓扑排序
     order = topological_sort(
         config["tasks"]
     )
 
+    # 任务名 -> 完整任务配置
     task_map = {}
 
     for task in config["tasks"]:
@@ -414,6 +426,7 @@ def main():
             task["name"]
         ] = task
 
+    # 打印执行顺序
     print("execution order:")
 
     for name in order:
@@ -421,26 +434,40 @@ def main():
 
     print()
 
+    # 调度器开始运行的时间
     program_start = time.monotonic()
 
+    # 保存任务最终状态
     statuses = {}
+
+    # 保存完整报告数据
     results = {}
 
+    # 新增：
+    # 单独记录整个 scheduler 是否发生 timeout
+    timed_out = False
+
+    # ---------- 按拓扑顺序执行 ----------
     for name in order:
 
+        # 新任务开始前检查 timeout
         if is_timeout(
             program_start,
             timeout,
         ):
+            timed_out = True
+
             status_print(
                 "Global scheduler "
                 "status: TIMEOUT",
                 "TIMEOUT",
             )
+
             break
 
         task = task_map[name]
 
+        # ---------- 检查前置依赖 ----------
         dependency_failed = False
 
         for dependency in task["dependencies"]:
@@ -451,6 +478,7 @@ def main():
                 dependency_failed = True
                 break
 
+        # ---------- 前置任务失败 ----------
         if dependency_failed:
             status = "SKIPPED"
             attempts = 0
@@ -463,6 +491,7 @@ def main():
                 "SKIPPED",
             )
 
+        # ---------- 前置任务全部成功 ----------
         else:
             (
                 status,
@@ -475,8 +504,10 @@ def main():
                 timeout,
             )
 
+        # 保存最终状态
         statuses[name] = status
 
+        # 保存报告数据
         results[name] = {
             "name": name,
             "status": status,
@@ -491,32 +522,62 @@ def main():
             f"attempts = {attempts}"
         )
 
+        # 当前任务执行过程中发生 timeout
         if status == "TIMEOUT":
+            timed_out = True
+
             status_print(
                 "Global scheduler "
                 "status: TIMEOUT",
                 "TIMEOUT",
             )
+
             break
 
+    # ---------- 新增：补全超时后未执行任务 ----------
+    if timed_out:
+        for name in order:
+
+            # 已经执行/处理过的任务不修改
+            if name in results:
+                continue
+
+            task = task_map[name]
+
+            # 未执行任务统一记录为 TIMEOUT
+            statuses[name] = "TIMEOUT"
+
+            results[name] = {
+                "name": name,
+                "status": "TIMEOUT",
+                "attempts": 0,
+                "duration": task["duration"],
+                "started_at": None,
+                "ended_at": None,
+            }
+
+    # ---------- 计算总耗时 ----------
     total_duration = elapsed_since(
         program_start
     )
 
+    # 按配置文件原始顺序生成报告
+    # 不直接使用 results.values()
+    report_tasks = []
+
+    for task in config["tasks"]:
+        report_tasks.append(
+            results[task["name"]]
+        )
+
+    # ---------- 最终报告 ----------
     report = {
-        "timeout": any(
-            result["status"]
-            == "TIMEOUT"
-            for result
-            in results.values()
-        ),
+        "timeout": timed_out,
         "total_duration": round(
             total_duration,
             2,
         ),
-        "tasks": list(
-            results.values()
-        ),
+        "tasks": report_tasks,
     }
 
     write_report(
@@ -532,6 +593,10 @@ def main():
     )
 
     print(
+        f"Timeout: {timed_out}"
+    )
+
+    print(
         f"Report written to: "
         f"{args.report}"
     )
@@ -542,6 +607,7 @@ if __name__ == "__main__":
     try:
         main()
 
+    # 文件不存在
     except FileNotFoundError as e:
         print(
             f"Error: config file "
@@ -549,21 +615,25 @@ if __name__ == "__main__":
         )
         sys.exit(1)
 
+    # YAML 语法错误
     except yaml.YAMLError as e:
         print(
             f"Error: invalid YAML: {e}"
         )
         sys.exit(1)
 
+    # JSON 语法错误
     except json.JSONDecodeError as e:
         print(
             f"Error: invalid JSON: {e}"
         )
         sys.exit(1)
 
+    # 配置错误 / 依赖错误 / 环
     except ValueError as e:
         print(
             f"Error: {e}"
         )
         sys.exit(1)
+
 
