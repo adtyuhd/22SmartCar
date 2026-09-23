@@ -8,6 +8,39 @@ from pathlib import Path
 import yaml
 
 
+# ---------- 彩色日志 ----------
+class Color:
+    GREEN = "\033[92m"
+    RED = "\033[91m"
+    YELLOW = "\033[93m"
+    BLUE = "\033[94m"
+    RESET = "\033[0m"
+
+
+def status_print(message, status):
+    colors = {
+        "SUCCESS": Color.GREEN,
+        "FAILED": Color.RED,
+        "RETRY": Color.YELLOW,
+        "SKIPPED": Color.BLUE,
+        "TIMEOUT": Color.RED,
+    }
+
+    # 只有真正的终端才输出 ANSI 颜色
+    if sys.stdout.isatty():
+        color = colors.get(status, "")
+
+        print(
+            f"{color}"
+            f"{message}"
+            f"{Color.RESET}"
+        )
+
+    else:
+        # 输出重定向到文件时不用颜色
+        print(message)
+
+
 # ---------- 命令行参数 ----------
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -59,7 +92,8 @@ def load_config(path):
 
     else:
         raise ValueError(
-            "unsupported config format: use .yaml, .yml, or .json"
+            "unsupported config format: "
+            "use .yaml, .yml, or .json"
         )
 
     return config
@@ -68,22 +102,35 @@ def load_config(path):
 # ---------- 检查配置 ----------
 def validate_config(config):
     if not isinstance(config, dict):
-        raise ValueError("config must be an object")
+        raise ValueError(
+            "config must be an object"
+        )
 
     if "tasks" not in config:
-        raise ValueError("config must contain 'tasks'")
+        raise ValueError(
+            "config must contain 'tasks'"
+        )
 
-    if not isinstance(config["tasks"], list):
-        raise ValueError("'tasks' must be a list")
+    if not isinstance(
+        config["tasks"],
+        list,
+    ):
+        raise ValueError(
+            "'tasks' must be a list"
+        )
 
     if len(config["tasks"]) == 0:
-        raise ValueError("task list cannot be empty")
+        raise ValueError(
+            "task list cannot be empty"
+        )
 
     names = set()
 
     for task in config["tasks"]:
         if not isinstance(task, dict):
-            raise ValueError("each task must be an object")
+            raise ValueError(
+                "each task must be an object"
+            )
 
         required_fields = [
             "name",
@@ -95,7 +142,8 @@ def validate_config(config):
         for field in required_fields:
             if field not in task:
                 raise ValueError(
-                    f"task is missing required field: {field}"
+                    f"task is missing "
+                    f"required field: {field}"
                 )
 
         name = task["name"]
@@ -112,24 +160,37 @@ def validate_config(config):
         dependencies = task["dependencies"]
 
         if (
-            not isinstance(duration, (int, float))
+            not isinstance(
+                duration,
+                (int, float),
+            )
             or duration < 0
         ):
             raise ValueError(
-                f"task '{name}': duration must be >= 0"
+                f"task '{name}': "
+                f"duration must be >= 0"
             )
 
         if (
-            not isinstance(success_rate, (int, float))
+            not isinstance(
+                success_rate,
+                (int, float),
+            )
             or not 0 <= success_rate <= 1
         ):
             raise ValueError(
-                f"task '{name}': success_rate must be between 0 and 1"
+                f"task '{name}': "
+                f"success_rate must be "
+                f"between 0 and 1"
             )
 
-        if not isinstance(dependencies, list):
+        if not isinstance(
+            dependencies,
+            list,
+        ):
             raise ValueError(
-                f"task '{name}': dependencies must be a list"
+                f"task '{name}': "
+                f"dependencies must be a list"
             )
 
     for task in config["tasks"]:
@@ -138,7 +199,8 @@ def validate_config(config):
         for dependency in task["dependencies"]:
             if dependency not in names:
                 raise ValueError(
-                    f"task '{name}' depends on unknown task: {dependency}"
+                    f"task '{name}' depends on "
+                    f"unknown task: {dependency}"
                 )
 
 
@@ -198,11 +260,18 @@ def is_timeout(start_time, timeout):
     if timeout is None:
         return False
 
-    return elapsed_since(start_time) >= timeout
+    return (
+        elapsed_since(start_time)
+        >= timeout
+    )
 
 
 # ---------- 执行单个任务 ----------
-def run_task(task, program_start, timeout):
+def run_task(
+    task,
+    program_start,
+    timeout,
+):
     name = task["name"]
     duration = task["duration"]
     success_rate = task["success_rate"]
@@ -212,9 +281,15 @@ def run_task(task, program_start, timeout):
     started_at = None
     ended_at = None
 
-    for attempt in range(1, max_attempts + 1):
+    for attempt in range(
+        1,
+        max_attempts + 1,
+    ):
 
-        if is_timeout(program_start, timeout):
+        if is_timeout(
+            program_start,
+            timeout,
+        ):
             return (
                 "TIMEOUT",
                 attempt - 1,
@@ -222,22 +297,25 @@ def run_task(task, program_start, timeout):
                 ended_at,
             )
 
-        # 第一次真正开始执行的时候记录
         if started_at is None:
             started_at = time.time()
 
         print(
-            f"Running {name}, attempt {attempt}"
+            f"Running {name}, "
+            f"attempt {attempt}"
         )
 
         time.sleep(duration)
 
-        # 每次尝试结束都更新 ended_at
         ended_at = time.time()
 
-        if is_timeout(program_start, timeout):
-            print(
-                f"{name}: TIMEOUT"
+        if is_timeout(
+            program_start,
+            timeout,
+        ):
+            status_print(
+                f"{name}: TIMEOUT",
+                "TIMEOUT",
             )
 
             return (
@@ -250,8 +328,9 @@ def run_task(task, program_start, timeout):
         value = random.random()
 
         if value < success_rate:
-            print(
-                f"{name}: SUCCESS"
+            status_print(
+                f"{name}: SUCCESS",
+                "SUCCESS",
             )
 
             return (
@@ -261,13 +340,15 @@ def run_task(task, program_start, timeout):
                 ended_at,
             )
 
-        print(
-            f"{name}: FAILED"
+        status_print(
+            f"{name}: FAILED",
+            "FAILED",
         )
 
         if attempt < max_attempts:
-            print(
-                f"{name}: RETRY"
+            status_print(
+                f"{name}: RETRY",
+                "RETRY",
             )
 
     return (
@@ -302,20 +383,25 @@ def main():
     if args.seed is not None:
         random.seed(args.seed)
 
-    config = load_config(args.config)
+    config = load_config(
+        args.config
+    )
 
     validate_config(config)
 
     if args.timeout is not None:
         if args.timeout <= 0:
             raise ValueError(
-                "--timeout must be greater than 0"
+                "--timeout must be "
+                "greater than 0"
             )
 
         timeout = args.timeout
 
     else:
-        timeout = config.get("timeout")
+        timeout = config.get(
+            "timeout"
+        )
 
     order = topological_sort(
         config["tasks"]
@@ -324,7 +410,9 @@ def main():
     task_map = {}
 
     for task in config["tasks"]:
-        task_map[task["name"]] = task
+        task_map[
+            task["name"]
+        ] = task
 
     print("execution order:")
 
@@ -336,15 +424,18 @@ def main():
     program_start = time.monotonic()
 
     statuses = {}
-
-    # 新增：保存报告需要的完整信息
     results = {}
 
     for name in order:
 
-        if is_timeout(program_start, timeout):
-            print(
-                "Global scheduler status: TIMEOUT"
+        if is_timeout(
+            program_start,
+            timeout,
+        ):
+            status_print(
+                "Global scheduler "
+                "status: TIMEOUT",
+                "TIMEOUT",
             )
             break
 
@@ -353,7 +444,10 @@ def main():
         dependency_failed = False
 
         for dependency in task["dependencies"]:
-            if statuses[dependency] != "SUCCESS":
+            if (
+                statuses[dependency]
+                != "SUCCESS"
+            ):
                 dependency_failed = True
                 break
 
@@ -363,8 +457,10 @@ def main():
             started_at = None
             ended_at = None
 
-            print(
-                f"{name}: SKIPPED because dependency failed"
+            status_print(
+                f"{name}: SKIPPED because "
+                f"dependency failed",
+                "SKIPPED",
             )
 
         else:
@@ -381,7 +477,6 @@ def main():
 
         statuses[name] = status
 
-        # 保存完整任务结果
         results[name] = {
             "name": name,
             "status": status,
@@ -397,21 +492,23 @@ def main():
         )
 
         if status == "TIMEOUT":
-            print(
-                "Global scheduler status: TIMEOUT"
+            status_print(
+                "Global scheduler "
+                "status: TIMEOUT",
+                "TIMEOUT",
             )
             break
 
-    # 计算程序真实运行时间
     total_duration = elapsed_since(
         program_start
     )
 
-    # 当前已经执行/处理的任务写进报告
     report = {
         "timeout": any(
-            result["status"] == "TIMEOUT"
-            for result in results.values()
+            result["status"]
+            == "TIMEOUT"
+            for result
+            in results.values()
         ),
         "total_duration": round(
             total_duration,
@@ -428,10 +525,12 @@ def main():
     )
 
     print()
+
     print(
         f"Total duration: "
         f"{total_duration:.2f}s"
     )
+
     print(
         f"Report written to: "
         f"{args.report}"
@@ -445,7 +544,8 @@ if __name__ == "__main__":
 
     except FileNotFoundError as e:
         print(
-            f"Error: config file not found: {e.filename}"
+            f"Error: config file "
+            f"not found: {e.filename}"
         )
         sys.exit(1)
 
@@ -466,5 +566,4 @@ if __name__ == "__main__":
             f"Error: {e}"
         )
         sys.exit(1)
-
 
