@@ -81,7 +81,6 @@ def validate_config(config):
 
     names = set()
 
-    # 第一轮：检查每个任务本身
     for task in config["tasks"]:
         if not isinstance(task, dict):
             raise ValueError("each task must be an object")
@@ -101,7 +100,6 @@ def validate_config(config):
 
         name = task["name"]
 
-        # 任务名不能重复
         if name in names:
             raise ValueError(
                 f"duplicate task name: {name}"
@@ -113,7 +111,6 @@ def validate_config(config):
         success_rate = task["success_rate"]
         dependencies = task["dependencies"]
 
-        # duration 必须是非负数字
         if (
             not isinstance(duration, (int, float))
             or duration < 0
@@ -122,7 +119,6 @@ def validate_config(config):
                 f"task '{name}': duration must be >= 0"
             )
 
-        # success_rate 必须在 0 ~ 1
         if (
             not isinstance(success_rate, (int, float))
             or not 0 <= success_rate <= 1
@@ -131,13 +127,11 @@ def validate_config(config):
                 f"task '{name}': success_rate must be between 0 and 1"
             )
 
-        # dependencies 必须是列表
         if not isinstance(dependencies, list):
             raise ValueError(
                 f"task '{name}': dependencies must be a list"
             )
 
-    # 第二轮：检查依赖是否存在
     for task in config["tasks"]:
         name = task["name"]
 
@@ -153,34 +147,29 @@ def topological_sort(tasks):
     indegree = {}
     graph = {}
 
-    # 初始化
     for task in tasks:
         name = task["name"]
 
-        # 当前任务有多少个前置依赖
-        indegree[name] = len(task["dependencies"])
+        indegree[name] = len(
+            task["dependencies"]
+        )
 
-        # 当前任务完成后影响哪些任务
         graph[name] = []
 
-    # 建立依赖关系
     for task in tasks:
         name = task["name"]
 
         for dependency in task["dependencies"]:
             graph[dependency].append(name)
 
-    # 找到一开始没有依赖的任务
     ready = []
 
     for name in indegree:
         if indegree[name] == 0:
             ready.append(name)
 
-    # 保存最终执行顺序
     order = []
 
-    # 拓扑排序
     while ready:
         current = ready.pop(0)
 
@@ -192,7 +181,6 @@ def topological_sort(tasks):
             if indegree[next_task] == 0:
                 ready.append(next_task)
 
-    # 如果没有处理完全部任务，说明存在依赖环
     if len(order) != len(tasks):
         raise ValueError(
             "dependency cycle detected"
@@ -201,75 +189,143 @@ def topological_sort(tasks):
     return order
 
 
+# ---------- 时间监控 ----------
+def elapsed_since(start_time):
+    return time.monotonic() - start_time
+
+
+def is_timeout(start_time, timeout):
+    if timeout is None:
+        return False
+
+    return elapsed_since(start_time) >= timeout
+
+
 # ---------- 执行单个任务 ----------
-def run_task(task):
+def run_task(task, program_start, timeout):
     name = task["name"]
     duration = task["duration"]
     success_rate = task["success_rate"]
 
     max_attempts = 3
 
+    started_at = None
+    ended_at = None
+
     for attempt in range(1, max_attempts + 1):
+
+        if is_timeout(program_start, timeout):
+            return (
+                "TIMEOUT",
+                attempt - 1,
+                started_at,
+                ended_at,
+            )
+
+        # 第一次真正开始执行的时候记录
+        if started_at is None:
+            started_at = time.time()
+
         print(
             f"Running {name}, attempt {attempt}"
         )
 
-        # 模拟任务执行时间
         time.sleep(duration)
 
-        # 产生 0 ~ 1 的随机数
+        # 每次尝试结束都更新 ended_at
+        ended_at = time.time()
+
+        if is_timeout(program_start, timeout):
+            print(
+                f"{name}: TIMEOUT"
+            )
+
+            return (
+                "TIMEOUT",
+                attempt,
+                started_at,
+                ended_at,
+            )
+
         value = random.random()
 
-        # 成功
         if value < success_rate:
             print(
                 f"{name}: SUCCESS"
             )
 
-            return "SUCCESS", attempt
+            return (
+                "SUCCESS",
+                attempt,
+                started_at,
+                ended_at,
+            )
 
-        # 本次尝试失败
         print(
             f"{name}: FAILED"
         )
 
-        # 前两次失败还可以重试
         if attempt < max_attempts:
             print(
                 f"{name}: RETRY"
             )
 
-    # 三次全部失败
-    return "SKIPPED", max_attempts
+    return (
+        "SKIPPED",
+        max_attempts,
+        started_at,
+        ended_at,
+    )
+
+
+# ---------- 写报告 ----------
+def write_report(path, report):
+    path = Path(path)
+
+    with open(
+        path,
+        "w",
+        encoding="utf-8",
+    ) as f:
+        json.dump(
+            report,
+            f,
+            indent=2,
+            ensure_ascii=False,
+        )
 
 
 # ---------- 主程序 ----------
 def main():
     args = parse_args()
 
-    # 设置随机种子
     if args.seed is not None:
         random.seed(args.seed)
 
-    # 读取配置
     config = load_config(args.config)
 
-    # 检查配置
     validate_config(config)
 
-    # 根据依赖关系进行拓扑排序
+    if args.timeout is not None:
+        if args.timeout <= 0:
+            raise ValueError(
+                "--timeout must be greater than 0"
+            )
+
+        timeout = args.timeout
+
+    else:
+        timeout = config.get("timeout")
+
     order = topological_sort(
         config["tasks"]
     )
 
-    # 建立：
-    # 任务名 -> 完整任务配置
     task_map = {}
 
     for task in config["tasks"]:
         task_map[task["name"]] = task
 
-    # 打印拓扑排序结果
     print("execution order:")
 
     for name in order:
@@ -277,14 +333,23 @@ def main():
 
     print()
 
-    # 保存每个已经处理任务的最终状态
+    program_start = time.monotonic()
+
     statuses = {}
 
-    # 按拓扑顺序执行
+    # 新增：保存报告需要的完整信息
+    results = {}
+
     for name in order:
+
+        if is_timeout(program_start, timeout):
+            print(
+                "Global scheduler status: TIMEOUT"
+            )
+            break
+
         task = task_map[name]
 
-        # ---------- 检查前置依赖 ----------
         dependency_failed = False
 
         for dependency in task["dependencies"]:
@@ -292,26 +357,85 @@ def main():
                 dependency_failed = True
                 break
 
-        # ---------- 前置任务失败 ----------
         if dependency_failed:
             status = "SKIPPED"
             attempts = 0
+            started_at = None
+            ended_at = None
 
             print(
                 f"{name}: SKIPPED because dependency failed"
             )
 
-        # ---------- 前置任务全部成功 ----------
         else:
-            status, attempts = run_task(task)
+            (
+                status,
+                attempts,
+                started_at,
+                ended_at,
+            ) = run_task(
+                task,
+                program_start,
+                timeout,
+            )
 
-        # 保存最终状态
         statuses[name] = status
+
+        # 保存完整任务结果
+        results[name] = {
+            "name": name,
+            "status": status,
+            "attempts": attempts,
+            "duration": task["duration"],
+            "started_at": started_at,
+            "ended_at": ended_at,
+        }
 
         print(
             f"final: {name} = {status}, "
             f"attempts = {attempts}"
         )
+
+        if status == "TIMEOUT":
+            print(
+                "Global scheduler status: TIMEOUT"
+            )
+            break
+
+    # 计算程序真实运行时间
+    total_duration = elapsed_since(
+        program_start
+    )
+
+    # 当前已经执行/处理的任务写进报告
+    report = {
+        "timeout": any(
+            result["status"] == "TIMEOUT"
+            for result in results.values()
+        ),
+        "total_duration": round(
+            total_duration,
+            2,
+        ),
+        "tasks": list(
+            results.values()
+        ),
+    }
+
+    write_report(
+        args.report,
+        report,
+    )
+
+    print()
+    print(
+        f"Total duration: "
+        f"{total_duration:.2f}s"
+    )
+    print(
+        f"Report written to: "
+        f"{args.report}"
+    )
 
 
 # ---------- 程序入口 ----------
@@ -319,30 +443,28 @@ if __name__ == "__main__":
     try:
         main()
 
-    # 文件不存在
     except FileNotFoundError as e:
         print(
             f"Error: config file not found: {e.filename}"
         )
         sys.exit(1)
 
-    # YAML 语法错误
     except yaml.YAMLError as e:
         print(
             f"Error: invalid YAML: {e}"
         )
         sys.exit(1)
 
-    # JSON 语法错误
     except json.JSONDecodeError as e:
         print(
             f"Error: invalid JSON: {e}"
         )
         sys.exit(1)
 
-    # 配置错误 / 依赖错误 / 环
     except ValueError as e:
         print(
             f"Error: {e}"
         )
         sys.exit(1)
+
+
