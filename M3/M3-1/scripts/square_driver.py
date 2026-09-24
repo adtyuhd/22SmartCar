@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import argparse
 import math
 
 import rclpy
@@ -12,26 +13,28 @@ from nav_msgs.msg import Odometry
 
 class SquareDriver(Node):
 
-    def __init__(self):
+    def __init__(self, side_length, laps):
         super().__init__('square_driver')
 
-        # 使用 Gazebo 发布的 /clock 作为时间源。
+        # 使用 Gazebo 发布的 /clock。
         self.set_parameters([
-            Parameter('use_sim_time', Parameter.Type.BOOL, True)
+            Parameter(
+                'use_sim_time',
+                Parameter.Type.BOOL,
+                True
+            )
         ])
 
         # -------------------------
         # Publisher / Subscriber
         # -------------------------
 
-        # 向小车发送速度命令。
         self.cmd_pub = self.create_publisher(
             Twist,
             '/cmd_vel',
             10
         )
 
-        # 订阅 /odom，用来读取车辆当前姿态。
         self.odom_sub = self.create_subscription(
             Odometry,
             '/odom',
@@ -39,95 +42,90 @@ class SquareDriver(Node):
             10
         )
 
-        # 最近一次 /odom 给出的 yaw。
-        # 单位：rad
+        # 最近一次 /odom 的 yaw。
         self.current_theta = None
 
-        # 每次转弯开始时的 yaw。
+        # 当前一次转弯开始时的 yaw。
         self.turn_start_theta = None
 
         # -------------------------
-        # 路径参数
+        # 命令行参数
         # -------------------------
 
-        # 目标圆角方形外包络边长：2.0 m。
-        self.side_length = 2.0
+        self.side_length = side_length
+        self.total_laps = laps
 
-        # 车辆线速度：0.2 m/s。
+        # -------------------------
+        # 车辆/路径参数
+        # -------------------------
+
+        # 线速度，单位 m/s。
         self.linear_speed = 0.2
 
-        # 圆角转弯半径：0.5 m。
+        # 圆角半径，单位 m。
         self.turn_radius = 0.5
 
-        # 对于 2 m × 2 m 的圆角方形：
+        # 2m 圆角方形的关系：
         #
-        # straight_length
-        # = side_length - 2 * turn_radius
-        # = 2.0 - 2 * 0.5
-        # = 1.0 m
+        # 直线长度 = 边长 - 2 * 圆角半径
+        #
+        # side=2.0 时：
+        # 1.0 = 2.0 - 2*0.5
         self.straight_length = (
-            self.side_length - 2.0 * self.turn_radius
+            self.side_length
+            - 2.0 * self.turn_radius
         )
 
-        # 直线段理论时间：
-        #
-        # t = distance / speed
-        #   = 1.0 / 0.2
-        #   = 5.0 s
+        if self.straight_length <= 0.0:
+            raise ValueError(
+                'side length must be greater than '
+                f'2 * turn radius = '
+                f'{2.0 * self.turn_radius:.3f} m'
+            )
+
+        # 直线段理论时间。
         self.straight_duration = (
-            self.straight_length / self.linear_speed
+            self.straight_length
+            / self.linear_speed
         )
 
-        # 转弯角速度：
+        # 圆周运动：
         #
         # omega = v / R
-        #       = 0.2 / 0.5
-        #       = 0.4 rad/s
         self.angular_speed = (
-            self.linear_speed / self.turn_radius
+            self.linear_speed
+            / self.turn_radius
         )
 
-        # 每个圆角目标转角：90 度。
+        # 每个角转 90 度。
         self.turn_angle = math.pi / 2.0
 
-        # 理论转弯时间：
-        #
-        # (pi / 2) / 0.4
-        # ≈ 3.927 s
+        # 理论转弯时间。
         self.theoretical_turn_duration = (
-            self.turn_angle / self.angular_speed
+            self.turn_angle
+            / self.angular_speed
         )
 
-        # 根据前面的实际实验进行校准。
+        # 根据前面实验校准的实际转弯时间。
         #
-        # 第一次：
-        # theoretical ≈ 3.927 s
-        # actual turn ≈ 77.09 deg
-        #
-        # 校准：
-        # 3.927 * 90 / 77.09 ≈ 4.585 s
-        #
-        # 第二次实验：
-        # actual turn ≈ 89.58 deg
-        # error ≈ -0.42 deg
+        # 理论约 3.927 s
+        # 实验校准约 4.585 s
         self.turn_duration = 4.585
 
+        # 每圈 4 个角。
+        self.corners_per_lap = 4
+
         # -------------------------
-        # 一圈控制参数
+        # 实验计数
         # -------------------------
 
-        # 一个完整圆角方形有 4 个转弯。
-        self.total_corners = 4
-
-        # 已经完成多少个转弯。
+        self.current_lap = 1
         self.completed_corners = 0
 
         # -------------------------
         # 状态机
         # -------------------------
 
-        # 状态变化：
-        #
         # WAIT_CLOCK
         #     ↓
         # STRAIGHT
@@ -137,18 +135,18 @@ class SquareDriver(Node):
         # STRAIGHT
         #     ↓
         # TURN
-        #     ↓
         # ...
         #     ↓
-        # 第 4 个 TURN
+        # 第四次 TURN
         #     ↓
-        # STOP
+        # 如果还有下一圈 -> STRAIGHT
+        # 如果全部完成 -> STOP
+
         self.state = 'WAIT_CLOCK'
 
-        # 当前状态开始的仿真时间。
         self.state_start_time = None
 
-        # 10 Hz 定时器。
+        # 10 Hz。
         self.timer = self.create_timer(
             0.1,
             self.timer_callback
@@ -159,27 +157,39 @@ class SquareDriver(Node):
         )
 
         self.get_logger().info(
+            f'Side length: {self.side_length:.3f} m'
+        )
+
+        self.get_logger().info(
+            f'Lap count: {self.total_laps}'
+        )
+
+        self.get_logger().info(
+            f'Straight length: '
+            f'{self.straight_length:.3f} m'
+        )
+
+        self.get_logger().info(
+            f'Straight duration: '
+            f'{self.straight_duration:.3f} s'
+        )
+
+        self.get_logger().info(
+            f'Theoretical turn duration: '
+            f'{self.theoretical_turn_duration:.3f} s'
+        )
+
+        self.get_logger().info(
+            f'Calibrated turn duration: '
+            f'{self.turn_duration:.3f} s'
+        )
+
+        self.get_logger().info(
             'Waiting for Gazebo /clock...'
         )
 
-        self.get_logger().info(
-            f'Side length: {self.side_length:.2f} m'
-        )
-
-        self.get_logger().info(
-            f'Straight length: {self.straight_length:.2f} m'
-        )
-
-        self.get_logger().info(
-            f'Straight duration: {self.straight_duration:.3f} s'
-        )
-
-        self.get_logger().info(
-            f'Turn duration: {self.turn_duration:.3f} s'
-        )
-
     def odom_callback(self, msg):
-        """读取 /odom，并把四元数转换成 yaw。"""
+        """从 /odom 四元数计算当前 yaw。"""
 
         q = msg.pose.pose.orientation
 
@@ -204,7 +214,7 @@ class SquareDriver(Node):
         self.cmd_pub.publish(msg)
 
     def normalize_angle(self, angle):
-        """把角度归一化到 (-pi, pi]。"""
+        """归一化到 (-pi, pi]。"""
 
         while angle <= -math.pi:
             angle += 2.0 * math.pi
@@ -215,7 +225,7 @@ class SquareDriver(Node):
         return angle
 
     def change_state(self, new_state):
-        """切换状态，并重新记录状态开始时间。"""
+        """切换状态并重新开始该状态计时。"""
 
         self.state = new_state
         self.state_start_time = self.get_clock().now()
@@ -224,7 +234,6 @@ class SquareDriver(Node):
             f'State: {self.state}'
         )
 
-        # 每次刚进入 TURN，都记录转弯起始角度。
         if new_state == 'TURN':
 
             if self.current_theta is not None:
@@ -236,17 +245,10 @@ class SquareDriver(Node):
                 )
 
     def finish_turn(self):
-        """完成一次转弯，打印结果，并决定下一步。"""
+        """完成一次 90° 转弯。"""
 
         self.completed_corners += 1
 
-        self.get_logger().info(
-            f'Corner {self.completed_corners}/'
-            f'{self.total_corners} completed.'
-        )
-
-        # 如果有有效的 /odom 数据，
-        # 就计算这一弯实际转了多少度。
         if (
             self.turn_start_theta is not None
             and self.current_theta is not None
@@ -262,6 +264,12 @@ class SquareDriver(Node):
             )
 
             self.get_logger().info(
+                f'Lap {self.current_lap}/{self.total_laps}, '
+                f'corner {self.completed_corners}/'
+                f'{self.corners_per_lap}'
+            )
+
+            self.get_logger().info(
                 'Actual turn: '
                 f'{math.degrees(actual_turn):.2f} deg'
             )
@@ -271,28 +279,46 @@ class SquareDriver(Node):
                 f'{math.degrees(turn_error):+.2f} deg'
             )
 
-        # 四个转弯都完成了：
-        # 一圈结束，停车。
-        if self.completed_corners >= self.total_corners:
-
-            self.change_state('STOP')
+        # 一圈的 4 个弯都完成。
+        if self.completed_corners >= self.corners_per_lap:
 
             self.get_logger().info(
-                'One lap completed.'
+                f'Lap {self.current_lap}/'
+                f'{self.total_laps} completed.'
             )
 
-        # 否则进入下一条直线。
-        else:
+            # 是否还有下一圈？
+            if self.current_lap < self.total_laps:
 
+                self.current_lap += 1
+                self.completed_corners = 0
+
+                self.get_logger().info(
+                    f'Starting lap '
+                    f'{self.current_lap}/{self.total_laps}.'
+                )
+
+                self.change_state('STRAIGHT')
+
+            else:
+
+                self.change_state('STOP')
+
+                self.get_logger().info(
+                    'All requested laps completed.'
+                )
+
+        else:
+            # 同一圈继续下一条直线。
             self.change_state('STRAIGHT')
 
     def timer_callback(self):
-        """根据当前状态决定车辆应该做什么。"""
+        """10 Hz 状态机控制。"""
 
         now = self.get_clock().now()
 
         # -------------------------
-        # 状态 0：等待 Gazebo 时钟
+        # WAIT_CLOCK
         # -------------------------
 
         if self.state == 'WAIT_CLOCK':
@@ -312,7 +338,7 @@ class SquareDriver(Node):
         ).nanoseconds / 1e9
 
         # -------------------------
-        # 状态 1：直行
+        # STRAIGHT
         # -------------------------
 
         if self.state == 'STRAIGHT':
@@ -323,10 +349,11 @@ class SquareDriver(Node):
             )
 
             if elapsed >= self.straight_duration:
+
                 self.change_state('TURN')
 
         # -------------------------
-        # 状态 2：左转
+        # TURN
         # -------------------------
 
         elif self.state == 'TURN':
@@ -337,10 +364,11 @@ class SquareDriver(Node):
             )
 
             if elapsed >= self.turn_duration:
+
                 self.finish_turn()
 
         # -------------------------
-        # 状态 3：停车
+        # STOP
         # -------------------------
 
         elif self.state == 'STOP':
@@ -351,10 +379,53 @@ class SquareDriver(Node):
             )
 
 
-def main(args=None):
-    rclpy.init(args=args)
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description=(
+            'Drive a rounded Ackermann square path.'
+        )
+    )
 
-    node = SquareDriver()
+    parser.add_argument(
+        '--side',
+        type=float,
+        required=True,
+        help='Square side length in meters.'
+    )
+
+    parser.add_argument(
+        '--laps',
+        type=int,
+        required=True,
+        help='Number of complete laps.'
+    )
+
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+
+    if args.side <= 0.0:
+        raise SystemExit(
+            '--side must be greater than 0.'
+        )
+
+    if args.laps <= 0:
+        raise SystemExit(
+            '--laps must be greater than 0.'
+        )
+
+    rclpy.init()
+
+    try:
+        node = SquareDriver(
+            side_length=args.side,
+            laps=args.laps
+        )
+    except ValueError as exc:
+        rclpy.shutdown()
+        raise SystemExit(str(exc))
 
     try:
         rclpy.spin(node)
@@ -363,7 +434,7 @@ def main(args=None):
         pass
 
     finally:
-        # 无论程序如何退出，都先发送停车命令。
+        # 退出程序前发送停车命令。
         node.publish_cmd(
             0.0,
             0.0
