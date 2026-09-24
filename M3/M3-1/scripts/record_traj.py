@@ -11,11 +11,10 @@ from rclpy.parameter import Parameter
 
 from gazebo_msgs.msg import ModelStates
 from nav_msgs.msg import Odometry
+from std_msgs.msg import String
 
 
 def normalize_angle(angle):
-    """把角度归一化到 (-pi, pi]。"""
-
     while angle <= -math.pi:
         angle += 2.0 * math.pi
 
@@ -26,8 +25,6 @@ def normalize_angle(angle):
 
 
 def quaternion_to_yaw(x, y, z, w):
-    """四元数转换为 yaw，单位 rad。"""
-
     return math.atan2(
         2.0 * (w * z + x * y),
         1.0 - 2.0 * (y * y + z * z)
@@ -39,7 +36,6 @@ class TrajectoryRecorder(Node):
     def __init__(self, output_dir, run_id):
         super().__init__('trajectory_recorder')
 
-        # 使用 Gazebo 发布的 /clock。
         self.set_parameters([
             Parameter(
                 'use_sim_time',
@@ -51,7 +47,10 @@ class TrajectoryRecorder(Node):
         self.output_dir = output_dir
         self.run_id = run_id
 
-        os.makedirs(self.output_dir, exist_ok=True)
+        os.makedirs(
+            self.output_dir,
+            exist_ok=True
+        )
 
         self.odom_path = os.path.join(
             self.output_dir,
@@ -75,10 +74,14 @@ class TrajectoryRecorder(Node):
             newline=''
         )
 
-        self.odom_writer = csv.writer(self.odom_file)
-        self.truth_writer = csv.writer(self.truth_file)
+        self.odom_writer = csv.writer(
+            self.odom_file
+        )
 
-        # 题目要求的固定四列表头。
+        self.truth_writer = csv.writer(
+            self.truth_file
+        )
+
         self.odom_writer.writerow([
             't',
             'x',
@@ -96,26 +99,16 @@ class TrajectoryRecorder(Node):
         self.odom_file.flush()
         self.truth_file.flush()
 
-        # -------------------------
-        # 最新数据
-        # -------------------------
-
         self.latest_odom = None
         self.latest_truth = None
 
-        # 正式记录是否已经开始。
         self.recording_started = False
+        self.recording_finished = False
 
-        # 记录开始时的 Gazebo 仿真时间。
         self.record_start_time = None
-
-        # 上一次真正写入 CSV 的相对时间。
-        # 用来避免重复时间戳。
         self.last_recorded_t = None
 
-        # -------------------------
-        # Subscribers
-        # -------------------------
+        self.sample_count = 0
 
         self.odom_sub = self.create_subscription(
             Odometry,
@@ -131,16 +124,22 @@ class TrajectoryRecorder(Node):
             10
         )
 
-        # 10 Hz 采样。
+        self.control_sub = self.create_subscription(
+            String,
+            '/experiment_control',
+            self.control_callback,
+            10
+        )
+
+        # 10 Hz 统一采样。
         self.timer = self.create_timer(
             0.1,
             self.record_callback
         )
 
-        self.sample_count = 0
-
         self.get_logger().info(
-            f'Recorder started for run {self.run_id:02d}.'
+            f'Recorder ready for run '
+            f'{self.run_id:02d}.'
         )
 
         self.get_logger().info(
@@ -152,19 +151,24 @@ class TrajectoryRecorder(Node):
         )
 
         self.get_logger().info(
-            'Waiting for /odom and /gazebo/model_states...'
+            'Waiting for /odom and '
+            '/gazebo/model_states...'
+        )
+
+        self.get_logger().info(
+            'Then waiting for START signal '
+            'from square_driver.'
         )
 
     def odom_callback(self, msg):
-        """保存最新 /odom。"""
-
         self.latest_odom = msg
 
     def truth_callback(self, msg):
-        """从 ModelStates 中找到 smart_car。"""
-
         try:
-            index = msg.name.index('smart_car')
+            index = msg.name.index(
+                'smart_car'
+            )
+
         except ValueError:
             return
 
@@ -174,8 +178,6 @@ class TrajectoryRecorder(Node):
         self.latest_truth = msg.pose[index]
 
     def get_sim_time(self):
-        """返回当前 Gazebo 仿真时间，单位秒。"""
-
         now = self.get_clock().now()
 
         if now.nanoseconds <= 0:
@@ -183,98 +185,128 @@ class TrajectoryRecorder(Node):
 
         return now.nanoseconds / 1e9
 
-    def start_recording_if_ready(self):
-        """等两路数据都准备好后才正式开始记录。"""
-
-        if self.recording_started:
-            return
-
-        if self.latest_odom is None:
-            return
-
-        if self.latest_truth is None:
-            return
-
-        current_time = self.get_sim_time()
-
-        if current_time is None:
-            return
-
-        self.record_start_time = current_time
-        self.recording_started = True
-        self.last_recorded_t = None
-
-        self.get_logger().info(
-            f'Start recording at sim time '
-            f'{self.record_start_time:.3f} s.'
+    def data_ready(self):
+        return (
+            self.latest_odom is not None
+            and self.latest_truth is not None
         )
 
-    def record_callback(self):
-        """每 0.1 秒记录一次 odom 和 truth。"""
+    def control_callback(self, msg):
 
-        self.start_recording_if_ready()
+        if msg.data == 'START':
+
+            # READY 阶段会收到多个 START。
+            # 只处理第一个。
+            if self.recording_started:
+                return
+
+            if not self.data_ready():
+                self.get_logger().warning(
+                    'START received, but odom/truth '
+                    'data are not ready yet.'
+                )
+                return
+
+            current_time = self.get_sim_time()
+
+            if current_time is None:
+                return
+
+            self.record_start_time = current_time
+            self.last_recorded_t = None
+            self.recording_started = True
+
+            self.get_logger().info(
+                'START received.'
+            )
+
+            self.get_logger().info(
+                'Recording started at sim time '
+                f'{self.record_start_time:.3f} s.'
+            )
+
+            # START 时立即写入第一条记录，
+            # 因此第一条数据的 t 尽量接近 0。
+            self.write_sample(
+                current_time
+            )
+
+        elif msg.data == 'STOP':
+
+            if not self.recording_started:
+                return
+
+            if self.recording_finished:
+                return
+
+            current_time = self.get_sim_time()
+
+            if current_time is not None:
+                self.write_sample(
+                    current_time
+                )
+
+            self.recording_finished = True
+
+            self.get_logger().info(
+                'STOP received.'
+            )
+
+            self.get_logger().info(
+                f'Recording finished with '
+                f'{self.sample_count} samples.'
+            )
+
+            self.get_logger().info(
+                'Recorder will shut down automatically.'
+            )
+
+    def write_sample(self, current_time):
 
         if not self.recording_started:
             return
 
-        current_time = self.get_sim_time()
-
-        if current_time is None:
+        if self.record_start_time is None:
             return
 
-        # 相对于本次记录开始时刻的时间。
-        t = current_time - self.record_start_time
-
-        # 防止同一个仿真时间重复写入。
-        if self.last_recorded_t is not None:
-            if t <= self.last_recorded_t:
-                return
-
-        # 我们要求两路数据都存在，
-        # 这样 odom 和 truth 才能共享完全相同的时间戳。
-        if self.latest_odom is None:
+        if not self.data_ready():
             return
 
-        if self.latest_truth is None:
+        t = (
+            current_time
+            - self.record_start_time
+        )
+
+        if t < 0.0:
             return
 
-        # -------------------------
-        # /odom
-        # -------------------------
+        if (
+            self.last_recorded_t is not None
+            and t <= self.last_recorded_t
+        ):
+            return
 
         odom_pose = self.latest_odom.pose.pose
 
-        odom_theta = quaternion_to_yaw(
-            odom_pose.orientation.x,
-            odom_pose.orientation.y,
-            odom_pose.orientation.z,
-            odom_pose.orientation.w
-        )
-
         odom_theta = normalize_angle(
-            odom_theta
+            quaternion_to_yaw(
+                odom_pose.orientation.x,
+                odom_pose.orientation.y,
+                odom_pose.orientation.z,
+                odom_pose.orientation.w
+            )
         )
-
-        # -------------------------
-        # Gazebo truth
-        # -------------------------
 
         truth_pose = self.latest_truth
 
-        truth_theta = quaternion_to_yaw(
-            truth_pose.orientation.x,
-            truth_pose.orientation.y,
-            truth_pose.orientation.z,
-            truth_pose.orientation.w
-        )
-
         truth_theta = normalize_angle(
-            truth_theta
+            quaternion_to_yaw(
+                truth_pose.orientation.x,
+                truth_pose.orientation.y,
+                truth_pose.orientation.z,
+                truth_pose.orientation.w
+            )
         )
-
-        # -------------------------
-        # 写入两个 CSV
-        # -------------------------
 
         self.odom_writer.writerow([
             f'{t:.3f}',
@@ -296,8 +328,24 @@ class TrajectoryRecorder(Node):
         self.last_recorded_t = t
         self.sample_count += 1
 
+    def record_callback(self):
+
+        if self.recording_finished:
+            return
+
+        if not self.recording_started:
+            return
+
+        current_time = self.get_sim_time()
+
+        if current_time is None:
+            return
+
+        self.write_sample(
+            current_time
+        )
+
     def close_files(self):
-        """关闭 CSV 文件。"""
 
         if not self.odom_file.closed:
             self.odom_file.close()
@@ -309,8 +357,8 @@ class TrajectoryRecorder(Node):
 def parse_args():
     parser = argparse.ArgumentParser(
         description=(
-            'Record /odom and Gazebo truth trajectories '
-            'to CSV.'
+            'Record /odom and Gazebo truth '
+            'trajectories to CSV.'
         )
     )
 
@@ -333,6 +381,11 @@ def parse_args():
 def main():
     args = parse_args()
 
+    if args.run <= 0:
+        raise SystemExit(
+            '--run must be greater than 0.'
+        )
+
     rclpy.init()
 
     recorder = TrajectoryRecorder(
@@ -341,7 +394,14 @@ def main():
     )
 
     try:
-        rclpy.spin(recorder)
+        while (
+            rclpy.ok()
+            and not recorder.recording_finished
+        ):
+            rclpy.spin_once(
+                recorder,
+                timeout_sec=0.1
+            )
 
     except KeyboardInterrupt:
         pass

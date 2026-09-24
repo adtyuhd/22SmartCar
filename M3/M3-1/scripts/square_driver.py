@@ -9,6 +9,7 @@ from rclpy.parameter import Parameter
 
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
+from std_msgs.msg import String
 
 
 class SquareDriver(Node):
@@ -16,7 +17,6 @@ class SquareDriver(Node):
     def __init__(self, side_length, laps):
         super().__init__('square_driver')
 
-        # 使用 Gazebo 的仿真时间 /clock
         self.set_parameters([
             Parameter(
                 'use_sim_time',
@@ -25,14 +25,18 @@ class SquareDriver(Node):
             )
         ])
 
-        # 发布车辆速度命令
         self.cmd_pub = self.create_publisher(
             Twist,
             '/cmd_vel',
             10
         )
 
-        # 订阅里程计，仅用于观察和记录转弯结果
+        self.control_pub = self.create_publisher(
+            String,
+            '/experiment_control',
+            10
+        )
+
         self.odom_sub = self.create_subscription(
             Odometry,
             '/odom',
@@ -43,42 +47,22 @@ class SquareDriver(Node):
         self.current_theta = None
         self.turn_start_theta = None
 
-        # =========================
-        # 路径参数
-        # =========================
-
         self.side_length = side_length
         self.total_laps = laps
 
-        # 车辆前进速度
         self.linear_speed = 0.2
 
-        # 圆角半径。
+        # 使用可行的 Ackermann 圆角半径。
         #
-        # 不能再使用 0.5 m。
-        #
-        # 对于：
         # wheelbase = 0.28 m
-        # track     = 0.18 m
+        # track = 0.18 m
         # steering limit = 30 deg
         #
-        # R = 0.5 m 会要求内侧前轮转到约 34.3 deg，
-        # 超过车辆 30 deg 的转向限制。
-        #
-        # R = 0.6 m 时：
-        # inner steering ≈ 28.77 deg
-        # outer steering ≈ 22.09 deg
-        #
-        # 已通过 /joint_states 实际验证没有发生转向饱和。
+        # R = 0.6 m 时，两个前轮理论转角约为：
+        # 28.77 deg 和 22.09 deg，
+        # 已通过 /joint_states 验证不会发生转向饱和。
         self.turn_radius = 0.6
 
-        # 一个 2 m × 2 m 的圆角方形：
-        #
-        # straight_length = side - 2R
-        #
-        # 当 side = 2.0 m、R = 0.6 m：
-        #
-        # straight_length = 0.8 m
         self.straight_length = (
             self.side_length
             - 2.0 * self.turn_radius
@@ -91,36 +75,19 @@ class SquareDriver(Node):
                 f'{2.0 * self.turn_radius:.3f} m'
             )
 
-        # 直线运动理论时间
-        #
-        # 0.8 / 0.2 = 4.0 s
         self.straight_duration = (
             self.straight_length
             / self.linear_speed
         )
 
-        # Ackermann 圆弧运动：
-        #
-        # omega = v / R
-        #
-        # 0.2 / 0.6 = 0.333333... rad/s
         self.angular_speed = (
             self.linear_speed
             / self.turn_radius
         )
 
-        # 每个圆角转 90°
         self.turn_angle = math.pi / 2.0
 
-        # 90° 圆弧的理论运动时间：
-        #
-        # t = angle / omega
-        #
-        # (pi / 2) / (0.2 / 0.6)
-        # ≈ 4.712 s
-        #
-        # 这里直接使用理论值。
-        # 不使用 Gazebo truth 或 /odom 反向校准这个时间。
+        # 使用理论时间，不根据 odom 或 truth 反向校准。
         self.turn_duration = (
             self.turn_angle
             / self.angular_speed
@@ -131,12 +98,31 @@ class SquareDriver(Node):
         self.current_lap = 1
         self.completed_corners = 0
 
-        # WAIT_CLOCK:
-        # 等待 Gazebo /clock 真正开始工作。
+        # 状态：
+        #
+        # WAIT_CLOCK
+        #     等待 Gazebo /clock
+        #
+        # READY
+        #     连续发布 START，让 recorder 稳定收到开始信号
+        #
+        # STRAIGHT
+        #     直线
+        #
+        # TURN
+        #     90° 圆弧
+        #
+        # STOP
+        #     停车
         self.state = 'WAIT_CLOCK'
         self.state_start_time = None
 
-        # 10 Hz 状态机
+        # READY 持续 1 秒。
+        # 期间车辆保持静止并重复发布 START。
+        self.ready_duration = 1.0
+
+        self.stop_signal_sent = False
+
         self.timer = self.create_timer(
             0.1,
             self.timer_callback
@@ -181,24 +167,27 @@ class SquareDriver(Node):
     def odom_callback(self, msg):
         q = msg.pose.pose.orientation
 
-        x = q.x
-        y = q.y
-        z = q.z
-        w = q.w
-
-        # quaternion -> yaw
         self.current_theta = math.atan2(
-            2.0 * (w * z + x * y),
-            1.0 - 2.0 * (y * y + z * z)
+            2.0 * (
+                q.w * q.z
+                + q.x * q.y
+            ),
+            1.0 - 2.0 * (
+                q.y * q.y
+                + q.z * q.z
+            )
         )
 
     def publish_cmd(self, linear_x, angular_z):
         msg = Twist()
-
         msg.linear.x = linear_x
         msg.angular.z = angular_z
-
         self.cmd_pub.publish(msg)
+
+    def publish_control(self, command):
+        msg = String()
+        msg.data = command
+        self.control_pub.publish(msg)
 
     def normalize_angle(self, angle):
         while angle <= -math.pi:
@@ -229,9 +218,8 @@ class SquareDriver(Node):
     def finish_turn(self):
         self.completed_corners += 1
 
-        # /odom 这里只用于观察误差。
-        #
-        # 它不会参与控制，也不会改变下一次转弯时间。
+        # odom 只用于观察。
+        # 不参与运动控制。
         if (
             self.turn_start_theta is not None
             and self.current_theta is not None
@@ -262,7 +250,6 @@ class SquareDriver(Node):
                 f'{math.degrees(turn_error):+.2f} deg'
             )
 
-        # 一圈四个圆角
         if self.completed_corners >= self.corners_per_lap:
 
             self.get_logger().info(
@@ -270,7 +257,6 @@ class SquareDriver(Node):
                 f'{self.total_laps} completed.'
             )
 
-            # 如果还有下一圈
             if self.current_lap < self.total_laps:
 
                 self.current_lap += 1
@@ -283,7 +269,6 @@ class SquareDriver(Node):
 
                 self.change_state('STRAIGHT')
 
-            # 所有圈数完成
             else:
                 self.change_state('STOP')
 
@@ -298,7 +283,7 @@ class SquareDriver(Node):
         now = self.get_clock().now()
 
         # =========================
-        # 等待 Gazebo 仿真时间
+        # 等待 Gazebo /clock
         # =========================
 
         if self.state == 'WAIT_CLOCK':
@@ -308,7 +293,7 @@ class SquareDriver(Node):
             )
 
             if now.nanoseconds > 0:
-                self.change_state('STRAIGHT')
+                self.change_state('READY')
 
             return
 
@@ -317,10 +302,28 @@ class SquareDriver(Node):
         ).nanoseconds / 1e9
 
         # =========================
+        # 实验开始同步
+        # =========================
+
+        if self.state == 'READY':
+
+            self.publish_cmd(
+                0.0,
+                0.0
+            )
+
+            # READY 阶段重复发送 START，
+            # 避免 recorder 漏掉单次 topic 消息。
+            self.publish_control('START')
+
+            if elapsed >= self.ready_duration:
+                self.change_state('STRAIGHT')
+
+        # =========================
         # 直线
         # =========================
 
-        if self.state == 'STRAIGHT':
+        elif self.state == 'STRAIGHT':
 
             self.publish_cmd(
                 self.linear_speed,
@@ -345,7 +348,7 @@ class SquareDriver(Node):
                 self.finish_turn()
 
         # =========================
-        # 停车
+        # 停车 + 实验结束信号
         # =========================
 
         elif self.state == 'STOP':
@@ -354,6 +357,14 @@ class SquareDriver(Node):
                 0.0,
                 0.0
             )
+
+            if not self.stop_signal_sent:
+                self.publish_control('STOP')
+                self.stop_signal_sent = True
+
+                self.get_logger().info(
+                    'Experiment STOP signal sent.'
+                )
 
 
 def parse_args():
