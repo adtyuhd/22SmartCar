@@ -3,6 +3,9 @@ build/
 install/
 log/
 
+# Experimental data
+logs/
+
 # Python cache
 __pycache__/
 *.pyc
