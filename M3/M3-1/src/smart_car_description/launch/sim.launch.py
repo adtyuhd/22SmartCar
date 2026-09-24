@@ -69,9 +69,31 @@ def generate_launch_description():
         ],
         output='screen'
     )
+    joint_state_broadcaster_spawner = Node(
+        package='controller_manager',
+        executable='spawner',
+        arguments=[
+            'joint_state_broadcaster',
+            '--controller-manager',
+            '/controller_manager'
+        ],
+        output='screen'
+    )
 
+    ackermann_controller_spawner = Node(
+        package='controller_manager',
+        executable='spawner',
+        arguments=[
+            'ackermann_steering_controller',
+            '--controller-manager',
+            '/controller_manager'
+        ],
+        output='screen'
+    )
     return LaunchDescription([
         robot_state_publisher,
         gazebo,
-        spawn_car
+        spawn_car,
+        joint_state_broadcaster_spawner,
+        ackermann_controller_spawner
     ])
