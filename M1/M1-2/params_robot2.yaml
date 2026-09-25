@@ -1,0 +1,8 @@
+/**/node_b_filter:
+  ros__parameters:
+    alpha: 0.3
+
+/**/node_c_alarm:
+  ros__parameters:
+    alarm_threshold: 0.5
+    service_timeout: 1.0
