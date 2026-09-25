@@ -1,6 +1,6 @@
 import rclpy
 from rclpy.node import Node
-
+import random
 from sensor_interfaces.msg import SensorData
 
 
@@ -23,7 +23,9 @@ class SensorPublisher(Node):
     def timer_callback(self):
         msg = SensorData()
 
-        msg.distance = 0.5
+        msg.distance = float(
+            0.5 + random.uniform(-0.2, 0.2)
+        )
         msg.unit = 'm'
         msg.stamp = self.get_clock().now().to_msg()
         msg.status = 0
