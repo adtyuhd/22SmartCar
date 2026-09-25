@@ -26,6 +26,7 @@ setup(
         'console_scripts': [
             'node_a_sensor = sensor_chain.node_a_sensor:main',
             'node_b_filter = sensor_chain.node_b_filter:main',
+            'node_c_alarm = sensor_chain.node_c_alarm:main',
         ],
     },
 )

@@ -1,7 +1,10 @@
+import random
+
 import rclpy
 from rclpy.node import Node
-import random
+
 from sensor_interfaces.msg import SensorData
+from sensor_interfaces.srv import TriggerAlarm
 
 
 class SensorPublisher(Node):
@@ -20,11 +23,17 @@ class SensorPublisher(Node):
             self.timer_callback
         )
 
+        self.alarm_service = self.create_service(
+            TriggerAlarm,
+            '/trigger_alarm',
+            self.alarm_callback
+        )
+
     def timer_callback(self):
         msg = SensorData()
 
         msg.distance = float(
-            0.5 + random.uniform(-0.2, 0.2)
+            0.4 + random.uniform(-0.2, 0.2)
         )
         msg.unit = 'm'
         msg.stamp = self.get_clock().now().to_msg()
@@ -35,6 +44,16 @@ class SensorPublisher(Node):
         self.get_logger().info(
             f'Published distance: {msg.distance:.3f} m'
         )
+
+    def alarm_callback(self, request, response):
+        self.get_logger().warning(
+            f'[ALARM] 距离过近！distance={request.distance:.3f} m'
+        )
+
+        response.success = True
+        response.message = 'Alarm triggered'
+
+        return response
 
 
 def main(args=None):
