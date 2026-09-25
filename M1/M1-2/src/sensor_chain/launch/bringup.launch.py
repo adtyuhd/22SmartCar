@@ -4,7 +4,7 @@ from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
     EmitEvent,
-    LogError,
+    LogInfo,
     OpaqueFunction,
     RegisterEventHandler,
 )
@@ -20,11 +20,13 @@ def launch_setup(context):
     use_sim_time = LaunchConfiguration('use_sim_time')
 
     if not params_file:
+        message = (
+            '[ERROR] params_file is required. '
+            'Please provide params_file:=/path/to/params.yaml'
+        )
+
         return [
-            LogError(
-                msg='params_file is required. '
-                    'Please provide params_file:=/path/to/params.yaml'
-            ),
+            LogInfo(msg=message),
             EmitEvent(
                 event=Shutdown(
                     reason='Missing parameter file'
@@ -37,10 +39,13 @@ def launch_setup(context):
     )
 
     if not os.path.isfile(params_file):
+        message = (
+            f'[ERROR] Parameter file does not exist: '
+            f'{params_file}'
+        )
+
         return [
-            LogError(
-                msg=f'Parameter file does not exist: {params_file}'
-            ),
+            LogInfo(msg=message),
             EmitEvent(
                 event=Shutdown(
                     reason='Parameter file not found'
