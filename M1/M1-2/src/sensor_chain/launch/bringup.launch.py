@@ -3,10 +3,13 @@ import os
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
+    EmitEvent,
+    LogError,
     OpaqueFunction,
     RegisterEventHandler,
 )
 from launch.event_handlers import OnProcessStart
+from launch.events import Shutdown
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -17,15 +20,33 @@ def launch_setup(context):
     use_sim_time = LaunchConfiguration('use_sim_time')
 
     if not params_file:
-        raise RuntimeError(
-            'params_file is required. '
-            'Please provide params_file:=/path/to/params.yaml'
-        )
+        return [
+            LogError(
+                msg='params_file is required. '
+                    'Please provide params_file:=/path/to/params.yaml'
+            ),
+            EmitEvent(
+                event=Shutdown(
+                    reason='Missing parameter file'
+                )
+            ),
+        ]
+
+    params_file = os.path.abspath(
+        os.path.expanduser(params_file)
+    )
 
     if not os.path.isfile(params_file):
-        raise RuntimeError(
-            f'Parameter file does not exist: {params_file}'
-        )
+        return [
+            LogError(
+                msg=f'Parameter file does not exist: {params_file}'
+            ),
+            EmitEvent(
+                event=Shutdown(
+                    reason='Parameter file not found'
+                )
+            ),
+        ]
 
     node_a = Node(
         package='sensor_chain',
