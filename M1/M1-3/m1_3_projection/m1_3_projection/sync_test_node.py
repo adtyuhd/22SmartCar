@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+import statistics
+
 import rclpy
 from rclpy.node import Node
 
@@ -13,37 +15,37 @@ from message_filters import (
 
 class SyncTestNode(Node):
     """
-    用于观察 /scan 与 /camera/image_raw 的近似时间同步效果。
+    用来研究 /scan 和 /camera/image_raw 的近似时间同步。
 
-    本节点暂时不做：
-      - TF
-      - 激光点转换
-      - 图像投影
+    当前节点只研究：
+      1. ApproximateTimeSynchronizer
+      2. slop
+      3. queue_size
+      4. 成功配对后的时间差
 
-    只做一件事情：
-
-        /scan
-             \
-              -> ApproximateTimeSynchronizer
-             /
-        /camera/image_raw
-
-    每成功配对一次，就打印两条消息的时间戳以及时间差。
+    暂时不做：
+      - TF 坐标变换
+      - LaserScan 转 3D 点
+      - 相机投影
     """
 
     def __init__(self):
         super().__init__('sync_test_node')
 
         # ----------------------------------------------------------
-        # ROS 参数
+        # 1. ROS 参数
         # ----------------------------------------------------------
+
+        # slop 单位是秒。
         #
-        # slop：
-        #   允许两条消息之间最大的时间差，单位是秒。
+        # 例如：
         #
-        # 默认 0.05 秒，也就是 50 ms。
+        #   0.02 = 20 ms
+        #   0.05 = 50 ms
         #
         self.declare_parameter('slop', 0.05)
+
+        # 题目建议 >= 50。
         self.declare_parameter('queue_size', 50)
 
         self.slop = (
@@ -58,23 +60,20 @@ class SyncTestNode(Node):
             .integer_value
         )
 
-        # 用来统计成功匹配了多少对
+        # ----------------------------------------------------------
+        # 2. 实验统计数据
+        # ----------------------------------------------------------
+
+        # 成功同步的 pair 数量
         self.pair_count = 0
 
-        # 用于累计时间差，后面可以计算平均值等
+        # 保存每一对消息的时间差，单位 ms
         self.time_diffs_ms = []
 
         # ----------------------------------------------------------
-        # message_filters Subscriber
+        # 3. 创建 message_filters 订阅器
         # ----------------------------------------------------------
-        #
-        # 注意这里没有使用普通的：
-        #
-        #   self.create_subscription(...)
-        #
-        # 因为我们想让 message_filters 接管消息，
-        # 再把两路消息进行时间匹配。
-        #
+
         self.scan_sub = Subscriber(
             self,
             LaserScan,
@@ -88,17 +87,15 @@ class SyncTestNode(Node):
         )
 
         # ----------------------------------------------------------
-        # ApproximateTimeSynchronizer
+        # 4. 创建 ApproximateTimeSynchronizer
         # ----------------------------------------------------------
         #
-        # fs:
-        #   需要同步的多个订阅器。
+        # 它会维护两个队列：
         #
-        # queue_size:
-        #   每一路最多保存多少条等待匹配的消息。
+        #   /scan 队列
+        #   /camera/image_raw 队列
         #
-        # slop:
-        #   两条消息最大允许时间差，单位：秒。
+        # 然后尝试从中找到时间差不超过 slop 的一对消息。
         #
         self.synchronizer = ApproximateTimeSynchronizer(
             [
@@ -109,8 +106,7 @@ class SyncTestNode(Node):
             slop=self.slop,
         )
 
-        # 一旦找到可以配成一对的 scan 和 image，
-        # 就调用 synchronized_callback。
+        # 成功配出一对以后，调用 synchronized_callback。
         self.synchronizer.registerCallback(
             self.synchronized_callback
         )
@@ -131,14 +127,21 @@ class SyncTestNode(Node):
     @staticmethod
     def stamp_to_seconds(stamp):
         """
-        ROS 时间戳：
+        把 ROS 时间戳：
 
-            sec
-            nanosec
+            stamp.sec
+            stamp.nanosec
 
-        转换成浮点秒：
+        转换成秒。
 
-            sec + nanosec / 1e9
+        例如：
+
+            sec = 1
+            nanosec = 500000000
+
+        得到：
+
+            1.5 秒
         """
 
         return (
@@ -148,25 +151,23 @@ class SyncTestNode(Node):
 
     def synchronized_callback(self, scan_msg, image_msg):
         """
-        只有 ApproximateTimeSynchronizer 成功匹配到：
-
-            1 个 LaserScan
-            +
-            1 个 Image
-
-        才会进入这个函数。
+        只有同步器认为这一帧 scan 和这一帧 image
+        可以组成一对时，才会进入这个函数。
         """
 
         self.pair_count += 1
 
+        # LaserScan 自己携带的采样时间
         scan_time = self.stamp_to_seconds(
             scan_msg.header.stamp
         )
 
+        # Image 自己携带的采样时间
         image_time = self.stamp_to_seconds(
             image_msg.header.stamp
         )
 
+        # 两者时间差
         diff_seconds = abs(
             scan_time - image_time
         )
@@ -182,6 +183,76 @@ class SyncTestNode(Node):
             f'dt={diff_ms:.3f} ms'
         )
 
+    def print_summary(self):
+        """
+        打印本次 slop 实验的统计结果。
+        """
+
+        print()
+        print('=' * 60)
+        print('Synchronization experiment summary')
+        print('=' * 60)
+
+        print(
+            f'slop       : '
+            f'{self.slop * 1000.0:.1f} ms'
+        )
+
+        print(
+            f'queue_size : '
+            f'{self.queue_size}'
+        )
+
+        print(
+            f'pairs      : '
+            f'{self.pair_count}'
+        )
+
+        # 一对都没有匹配到时，不能计算统计量。
+        if not self.time_diffs_ms:
+            print('No synchronized pairs were found.')
+            print('=' * 60)
+            return
+
+        median_ms = statistics.median(
+            self.time_diffs_ms
+        )
+
+        mean_ms = statistics.mean(
+            self.time_diffs_ms
+        )
+
+        min_ms = min(
+            self.time_diffs_ms
+        )
+
+        max_ms = max(
+            self.time_diffs_ms
+        )
+
+        print(
+            f'median dt  : '
+            f'{median_ms:.3f} ms'
+        )
+
+        print(
+            f'mean dt    : '
+            f'{mean_ms:.3f} ms'
+        )
+
+        print(
+            f'min dt     : '
+            f'{min_ms:.3f} ms'
+        )
+
+        print(
+            f'max dt     : '
+            f'{max_ms:.3f} ms'
+        )
+
+        print('=' * 60)
+        print()
+
 
 def main(args=None):
     rclpy.init(args=args)
@@ -195,6 +266,9 @@ def main(args=None):
         pass
 
     finally:
+        # Ctrl+C 后先输出实验统计结果
+        node.print_summary()
+
         node.destroy_node()
 
         if rclpy.ok():

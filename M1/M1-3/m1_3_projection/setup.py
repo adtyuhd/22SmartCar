@@ -44,6 +44,10 @@ setup(
                 'sync_test_node = '
                 'm1_3_projection.sync_test_node:main'
             ),
+            (
+                'sync_sweep_node = '
+                'm1_3_projection.sync_sweep_node:main'
+            ),
         ],
     },
 )
