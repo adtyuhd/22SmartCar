@@ -56,6 +56,10 @@ setup(
                 'projection_node = '
                 'm1_3_projection.projection_node:main'
             ),
+            (
+                'time_test_node = '
+                'm1_3_projection.time_test_node:main'
+            ),
         ],
     },
 )
