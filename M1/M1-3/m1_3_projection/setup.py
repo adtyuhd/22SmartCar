@@ -48,6 +48,10 @@ setup(
                 'sync_sweep_node = '
                 'm1_3_projection.sync_sweep_node:main'
             ),
+            (
+                'transform_test_node = '
+                'm1_3_projection.transform_test_node:main'
+            ),
         ],
     },
 )
