@@ -1,0 +1,19 @@
+# ROS 2 / colcon build artifacts
+build/
+install/
+log/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# ROS bag generated data
+sample_bag/
+*.db3
+
+# Editor / OS temporary files
+.vscode/
+.idea/
+.DS_Store
+*~

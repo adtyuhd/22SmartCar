@@ -248,15 +248,15 @@ class ProjectionNode(Node):
         self.pair_count = 0
         self.saved_image_count = 0
 
-        # 上一次保存图片对应的 scan 时间。
+        # 上一次保存图片对应的 sensor timestamp。
         self.last_saved_stamp_sec = None
 
-        # 为了避免 3 张图片全部来自连续的 0.1 秒，
-        # 默认让保存图片之间至少相隔 1 秒。
+        # 为了避免保存连续的几帧，
+        # 让相邻保存图片之间至少相隔 0.5 秒。
         #
-        # 这不是传感器参数，也不是相机/雷达标定参数，
+        # 这不是传感器参数，也不是标定参数，
         # 只是 debug 输出采样策略。
-        self.save_interval_sec = 1.0
+        self.save_interval_sec = 0.5
 
         # ==========================================================
         # 9. 启动信息
@@ -417,6 +417,17 @@ class ProjectionNode(Node):
 
         # ----------------------------------------------------------
         # 2. TF lookup
+        #
+        # lookup_transform(target, source, time)
+        #
+        # 我们需要：
+        #
+        # laser_link -> camera_link
+        #
+        # 所以：
+        #
+        # target = camera_link
+        # source = scan header frame
         # ----------------------------------------------------------
 
         source_frame = scan_msg.header.frame_id
@@ -440,7 +451,7 @@ class ProjectionNode(Node):
             return
 
         # ----------------------------------------------------------
-        # 3. 原图副本
+        # 3. 原始 RGB 图像副本
         # ----------------------------------------------------------
 
         output_data = bytearray(
@@ -460,26 +471,46 @@ class ProjectionNode(Node):
                 range_value
             )
 
+            # 跳过 inf / nan。
             if not math.isfinite(r):
                 continue
 
+            # 跳过传感器有效量程之外的值。
             if (
                 r < scan_msg.range_min
                 or r > scan_msg.range_max
             ):
                 continue
 
+            # ------------------------------------------------------
+            # LaserScan 极坐标
+            #
+            # theta_i = angle_min + i * angle_increment
+            # ------------------------------------------------------
+
             theta = (
                 scan_msg.angle_min
                 + i * scan_msg.angle_increment
             )
 
-            # laser_link
+            # ------------------------------------------------------
+            # 5. polar -> laser_link Cartesian
+            #
+            # 2D LaserScan：
+            #
+            # x = r cos(theta)
+            # y = r sin(theta)
+            # z = 0
+            # ------------------------------------------------------
+
             x_laser = r * math.cos(theta)
             y_laser = r * math.sin(theta)
             z_laser = 0.0
 
-            # laser_link -> camera_link
+            # ------------------------------------------------------
+            # 6. laser_link -> camera_link
+            # ------------------------------------------------------
+
             (
                 x_camera,
                 y_camera,
@@ -491,16 +522,41 @@ class ProjectionNode(Node):
                 transform,
             )
 
-            # camera_link -> optical
+            # ------------------------------------------------------
+            # 7. camera body -> optical
+            #
+            # camera_link:
+            #   +x forward
+            #   +y left
+            #   +z up
+            #
+            # optical:
+            #   +Z forward
+            #   +X right
+            #   +Y down
+            #
+            # 因此：
+            #
+            # Xopt = -Ycamera
+            # Yopt = -Zcamera
+            # Zopt =  Xcamera
+            # ------------------------------------------------------
+
             x_opt = -y_camera
             y_opt = -z_camera
             z_opt = x_camera
 
-            # 相机后方点丢弃。
+            # 相机后面的点不能投影。
             if z_opt <= 0.0:
                 continue
 
-            # pinhole projection
+            # ------------------------------------------------------
+            # 8. pinhole projection
+            #
+            # u = fx * X / Z + cx
+            # v = fy * Y / Z + cy
+            # ------------------------------------------------------
+
             u_float = (
                 self.fx * x_opt / z_opt
                 + self.cx
@@ -519,6 +575,10 @@ class ProjectionNode(Node):
                 round(v_float)
             )
 
+            # ------------------------------------------------------
+            # 9. 图像范围检查
+            # ------------------------------------------------------
+
             if (
                 u < 0
                 or u >= image_msg.width
@@ -528,7 +588,10 @@ class ProjectionNode(Node):
                 continue
 
             # ------------------------------------------------------
-            # 5. 根据距离得到 RGB
+            # 10. 根据距离得到颜色
+            #
+            # near -> red
+            # far  -> blue
             # ------------------------------------------------------
 
             red, green, blue = self.range_to_rgb(
@@ -538,7 +601,7 @@ class ProjectionNode(Node):
             )
 
             # ------------------------------------------------------
-            # 6. 画点
+            # 11. 绘制投影点
             # ------------------------------------------------------
 
             self.draw_point(
@@ -554,16 +617,18 @@ class ProjectionNode(Node):
             projected_count += 1
 
         # ----------------------------------------------------------
-        # 7. 构造 debug Image
+        # 12. 构造输出 Image
         # ----------------------------------------------------------
 
         debug_msg = Image()
 
+        # 输出对应当前同步到的 camera image。
         debug_msg.header = image_msg.header
 
         debug_msg.height = image_msg.height
         debug_msg.width = image_msg.width
 
+        # 作业明确要求 rgb8。
         debug_msg.encoding = 'rgb8'
 
         debug_msg.is_bigendian = image_msg.is_bigendian
@@ -574,7 +639,7 @@ class ProjectionNode(Node):
         )
 
         # ----------------------------------------------------------
-        # 8. 发布
+        # 13. 发布
         # ----------------------------------------------------------
 
         self.debug_image_pub.publish(
@@ -582,7 +647,7 @@ class ProjectionNode(Node):
         )
 
         # ----------------------------------------------------------
-        # 9. 按时间间隔保存 PNG
+        # 14. 保存 PNG
         # ----------------------------------------------------------
 
         saved_path = self.maybe_save_image(
@@ -615,10 +680,10 @@ class ProjectionNode(Node):
         range_max,
     ):
         """
-        将距离线性映射到：
+        将 LaserScan 距离映射为 RGB：
 
-            near -> red
-            far  -> blue
+            range_min -> red
+            range_max -> blue
         """
 
         denominator = (
@@ -677,7 +742,7 @@ class ProjectionNode(Node):
         blue,
     ):
         """
-        在 RGB8 图像上画 5x5 点。
+        在 RGB8 图像上画一个 5x5 像素的小点。
         """
 
         radius = 2
@@ -701,6 +766,10 @@ class ProjectionNode(Node):
                 ):
                     continue
 
+                # RGB8 每个像素占 3 bytes。
+                #
+                # 使用 Image.step 而不是 width * 3
+                # 计算每一行的起始位置。
                 offset = (
                     v * image_msg.step
                     + u * 3
@@ -719,10 +788,9 @@ class ProjectionNode(Node):
         image_msg,
     ):
         """
-        最多保存 max_images 张图片。
+        最多保存 max_images 张不同时间的投影图片。
 
-        相邻保存图片之间至少相隔 save_interval_sec，
-        保证不是连续几帧几乎完全一样的结果。
+        相邻保存图片至少相隔 0.5 秒。
         """
 
         if (
@@ -760,13 +828,7 @@ class ProjectionNode(Node):
             filename,
         )
 
-        # ROS rgb8 数据中每行实际占 image_msg.step bytes。
-        #
-        # 当前生成器的 RGB8 是紧密排列的：
-        #
-        #     step = width * 3
-        #
-        # 为避免悄悄处理错误格式，这里显式检查。
+        # 当前保存逻辑要求 RGB8 紧密排列。
         expected_step = (
             image_msg.width * 3
         )
@@ -777,7 +839,6 @@ class ProjectionNode(Node):
                 f'step={image_msg.step}, '
                 f'expected {expected_step}'
             )
-
             return None
 
         pil_image = PilImage.frombytes(
@@ -812,7 +873,9 @@ class ProjectionNode(Node):
         transform,
     ):
         """
-        P_target = R * P_source + t
+        对单个 3D 点应用 TF：
+
+            P_target = R * P_source + t
         """
 
         q = transform.transform.rotation
@@ -823,6 +886,7 @@ class ProjectionNode(Node):
         qz = float(q.z)
         qw = float(q.w)
 
+        # 四元数归一化。
         norm = math.sqrt(
             qx * qx
             + qy * qy
@@ -840,6 +904,7 @@ class ProjectionNode(Node):
         qz /= norm
         qw /= norm
 
+        # Quaternion -> rotation matrix.
         r00 = 1.0 - 2.0 * (
             qy * qy + qz * qz
         )
