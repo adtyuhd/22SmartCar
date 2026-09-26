@@ -52,6 +52,10 @@ setup(
                 'transform_test_node = '
                 'm1_3_projection.transform_test_node:main'
             ),
+            (
+                'projection_node = '
+                'm1_3_projection.projection_node:main'
+            ),
         ],
     },
 )
