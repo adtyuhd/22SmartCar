@@ -1,0 +1,57 @@
+<?xml version="1.0"?>
+<?xml-model
+  href="http://download.ros.org/schema/package_format3.xsd"
+  schematypens="http://www.w3.org/2001/XMLSchema"?>
+
+<package format="3">
+
+  <name>m1_3_projection</name>
+
+  <version>0.0.0</version>
+
+  <description>
+    M1-3 camera and laser time synchronization,
+    TF2 transformation and projection.
+  </description>
+
+  <maintainer email="student@example.com">
+    adtyuhd
+  </maintainer>
+
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>
+    ament_python
+  </buildtool_depend>
+
+  <exec_depend>
+    rclpy
+  </exec_depend>
+
+  <exec_depend>
+    geometry_msgs
+  </exec_depend>
+
+  <exec_depend>
+    sensor_msgs
+  </exec_depend>
+
+  <exec_depend>
+    tf2_ros
+  </exec_depend>
+
+  <exec_depend>
+    message_filters
+  </exec_depend>
+
+  <exec_depend>
+    python3-yaml
+  </exec_depend>
+
+  <export>
+    <build_type>
+      ament_python
+    </build_type>
+  </export>
+
+</package>
