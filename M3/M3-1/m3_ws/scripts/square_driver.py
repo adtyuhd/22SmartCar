@@ -6,6 +6,7 @@ import os
 import signal
 import subprocess
 import sys
+import time
 
 import rclpy
 from rclpy.node import Node
@@ -18,9 +19,6 @@ from std_srvs.srv import Empty
 WHEELBASE = 0.28
 MAX_STEERING_ANGLE = math.radians(30.0)
 
-# Gazebo 实测标定：
-# R = 0.6 m, v = 0.2 m/s 时，
-# 约 3.93 s 对应真实 90° 转弯。
 TURN_TIME_SCALE = 0.834
 
 
@@ -43,8 +41,6 @@ class SquareDriver(Node):
             10
         )
 
-        # 使用 reset_world：
-        # 复位 Gazebo 物理世界，但不让 /clock 倒退。
         self.reset_client = self.create_client(
             Empty,
             '/reset_world'
@@ -52,7 +48,11 @@ class SquareDriver(Node):
 
         self.publish_period = 0.05
 
-    def publish_cmd(self, linear_x, angular_z):
+    def publish_cmd(
+        self,
+        linear_x,
+        angular_z
+    ):
         msg = Twist()
 
         msg.linear.x = linear_x
@@ -61,10 +61,6 @@ class SquareDriver(Node):
         self.cmd_pub.publish(msg)
 
     def wait_for_clock(self):
-        """
-        等待 Gazebo /clock 有效。
-        """
-
         while rclpy.ok():
 
             rclpy.spin_once(
@@ -72,14 +68,18 @@ class SquareDriver(Node):
                 timeout_sec=0.1
             )
 
-            if self.get_clock().now().nanoseconds > 0:
+            if (
+                self.get_clock()
+                .now()
+                .nanoseconds
+                > 0
+            ):
                 return
 
-    def wait_sim_duration(self, duration):
-        """
-        等待指定仿真时间，同时持续处理 /clock。
-        """
-
+    def wait_sim_duration(
+        self,
+        duration
+    ):
         start_time = None
 
         while rclpy.ok():
@@ -106,18 +106,12 @@ class SquareDriver(Node):
                 return
 
     def reset_world(self):
-        """
-        将 Gazebo 世界恢复到初始物理状态。
-
-        注意：
-        /odom 不会清零，所以每一圈的误差
-        都用该圈自己的 start/end 做相对计算。
-        """
-
         self.stop()
 
-        while not self.reset_client.wait_for_service(
-            timeout_sec=1.0
+        while not (
+            self.reset_client.wait_for_service(
+                timeout_sec=1.0
+            )
         ):
             self.get_logger().info(
                 'Waiting for /reset_world ...'
@@ -125,8 +119,10 @@ class SquareDriver(Node):
 
         request = Empty.Request()
 
-        future = self.reset_client.call_async(
-            request
+        future = (
+            self.reset_client.call_async(
+                request
+            )
         )
 
         rclpy.spin_until_future_complete(
@@ -135,6 +131,7 @@ class SquareDriver(Node):
         )
 
         if future.exception() is not None:
+
             raise RuntimeError(
                 f'/reset_world failed: '
                 f'{future.exception()}'
@@ -148,20 +145,20 @@ class SquareDriver(Node):
         angular_z,
         duration
     ):
-        """
-        按照给定速度运行指定的仿真时间。
-        """
-
-        # 先更新一次 /clock
+        # 先获取最新的 /clock
         rclpy.spin_once(
             self,
             timeout_sec=0.02
         )
 
-        start_time = self.get_clock().now()
-        last_publish_time = start_time
+        start_time = (
+            self.get_clock().now()
+        )
 
-        # 立即发送第一条速度指令
+        last_publish_time = (
+            start_time
+        )
+
         self.publish_cmd(
             linear_x,
             angular_z
@@ -174,7 +171,9 @@ class SquareDriver(Node):
                 timeout_sec=0.01
             )
 
-            now = self.get_clock().now()
+            now = (
+                self.get_clock().now()
+            )
 
             elapsed = (
                 now - start_time
@@ -187,7 +186,10 @@ class SquareDriver(Node):
                 now - last_publish_time
             ).nanoseconds / 1e9
 
-            if since_last_publish >= self.publish_period:
+            if (
+                since_last_publish
+                >= self.publish_period
+            ):
 
                 self.publish_cmd(
                     linear_x,
@@ -201,7 +203,9 @@ class SquareDriver(Node):
         distance,
         speed
     ):
-        duration = distance / speed
+        duration = (
+            distance / speed
+        )
 
         self.get_logger().info(
             f'Straight: '
@@ -221,12 +225,17 @@ class SquareDriver(Node):
         speed,
         radius
     ):
-        angular_velocity = speed / radius
+        angular_velocity = (
+            speed / radius
+        )
 
-        turn_angle = math.pi / 2.0
+        turn_angle = (
+            math.pi / 2.0
+        )
 
         theoretical_duration = (
-            turn_angle / angular_velocity
+            turn_angle
+            / angular_velocity
         )
 
         calibrated_duration = (
@@ -241,7 +250,8 @@ class SquareDriver(Node):
         self.get_logger().info(
             f'Left turn: '
             f'radius={radius:.3f} m, '
-            f'angular_velocity={angular_velocity:.3f} rad/s, '
+            f'angular_velocity='
+            f'{angular_velocity:.3f} rad/s, '
             f'steering_angle='
             f'{math.degrees(steering_angle):.2f} deg, '
             f'theoretical_duration='
@@ -257,10 +267,6 @@ class SquareDriver(Node):
         )
 
     def stop(self):
-        """
-        连续发送停止指令。
-        """
-
         for _ in range(5):
 
             self.publish_cmd(
@@ -278,14 +284,6 @@ def start_recorder(
     output_dir,
     lap_number
 ):
-    """
-    每圈启动独立记录器。
-
-    例如：
-        run_01_odom.csv
-        run_01_truth.csv
-    """
-
     os.makedirs(
         output_dir,
         exist_ok=True
@@ -305,34 +303,118 @@ def start_recorder(
         f'run_{lap_number:02d}'
     )
 
+    ready_file = os.path.join(
+        output_dir,
+        f'.run_{lap_number:02d}_ready'
+    )
+
+    # 防止上一次运行留下 ready 文件
+    if os.path.exists(
+        ready_file
+    ):
+        os.remove(
+            ready_file
+        )
+
     process = subprocess.Popen([
         sys.executable,
         recorder_script,
         '--output-prefix',
-        output_prefix
+        output_prefix,
+        '--ready-file',
+        ready_file
     ])
 
-    return process
+    return (
+        process,
+        ready_file
+    )
 
 
-def stop_recorder(process):
-    if process is None:
-        return
+def wait_for_recorder_ready(
+    node,
+    process,
+    ready_file,
+    timeout=10.0
+):
+    """
+    等到 recorder 已经真正收到
+    odom 和 Gazebo truth。
+    """
 
-    if process.poll() is None:
+    start_wall_time = (
+        time.monotonic()
+    )
 
-        process.send_signal(
-            signal.SIGINT
+    while rclpy.ok():
+
+        rclpy.spin_once(
+            node,
+            timeout_sec=0.05
         )
 
-        try:
-            process.wait(
-                timeout=5
+        if os.path.exists(
+            ready_file
+        ):
+
+            node.get_logger().info(
+                'Recorder confirmed ready.'
             )
 
-        except subprocess.TimeoutExpired:
-            process.terminate()
-            process.wait()
+            return
+
+        if process.poll() is not None:
+
+            raise RuntimeError(
+                'Trajectory recorder '
+                'exited before becoming ready.'
+            )
+
+        elapsed = (
+            time.monotonic()
+            - start_wall_time
+        )
+
+        if elapsed >= timeout:
+
+            raise RuntimeError(
+                'Timed out waiting for '
+                'trajectory recorder.'
+            )
+
+
+def stop_recorder(
+    process,
+    ready_file=None
+):
+    if process is not None:
+
+        if process.poll() is None:
+
+            process.send_signal(
+                signal.SIGINT
+            )
+
+            try:
+
+                process.wait(
+                    timeout=5
+                )
+
+            except subprocess.TimeoutExpired:
+
+                process.terminate()
+                process.wait()
+
+    if (
+        ready_file
+        and os.path.exists(
+            ready_file
+        )
+    ):
+        os.remove(
+            ready_file
+        )
 
 
 def main():
@@ -398,7 +480,8 @@ def main():
 
     straight_length = (
         args.side
-        - 2.0 * args.turn_radius
+        - 2.0
+        * args.turn_radius
     )
 
     if straight_length <= 0.0:
@@ -408,10 +491,14 @@ def main():
         )
 
     steering_angle = math.atan(
-        WHEELBASE / args.turn_radius
+        WHEELBASE
+        / args.turn_radius
     )
 
-    if steering_angle > MAX_STEERING_ANGLE:
+    if (
+        steering_angle
+        > MAX_STEERING_ANGLE
+    ):
         parser.error(
             'turn radius is too small: '
             f'requires steering angle '
@@ -420,6 +507,7 @@ def main():
         )
 
     recorder_process = None
+    ready_file = None
 
     rclpy.init()
 
@@ -467,37 +555,43 @@ def main():
                 f'{lap}/{args.laps} =========='
             )
 
-            # 每圈开始前复位 Gazebo 物理位置
             node.get_logger().info(
                 'Resetting world...'
             )
 
             node.reset_world()
 
-            # 等待车辆落稳
+            # 等车辆物理状态稳定
             node.wait_sim_duration(
                 1.0
             )
 
-            # 每圈单独记录
             if args.out is not None:
 
-                recorder_process = start_recorder(
+                (
+                    recorder_process,
+                    ready_file
+                ) = start_recorder(
                     args.out,
                     lap
                 )
 
-                # 等待记录器建立订阅
-                node.wait_sim_duration(
-                    1.0
+                # 关键：
+                # 不再固定等待 1 秒。
+                # recorder 真正收到两种数据后
+                # 才开始运动。
+                wait_for_recorder_ready(
+                    node,
+                    recorder_process,
+                    ready_file
                 )
 
-            # 四条边
             for side_index in range(4):
 
                 node.get_logger().info(
                     f'----- LAP {lap} '
-                    f'SIDE {side_index + 1}/4 -----'
+                    f'SIDE '
+                    f'{side_index + 1}/4 -----'
                 )
 
                 node.drive_straight(
@@ -512,16 +606,17 @@ def main():
 
             node.stop()
 
-            # 停车后继续记录半秒
             node.wait_sim_duration(
                 0.5
             )
 
             stop_recorder(
-                recorder_process
+                recorder_process,
+                ready_file
             )
 
             recorder_process = None
+            ready_file = None
 
             node.get_logger().info(
                 f'========== LAP {lap} '
@@ -537,7 +632,8 @@ def main():
         node.stop()
 
         stop_recorder(
-            recorder_process
+            recorder_process,
+            ready_file
         )
 
         node.destroy_node()

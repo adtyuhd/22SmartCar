@@ -16,8 +16,7 @@ from gazebo_msgs.msg import ModelStates
 def quaternion_to_yaw(q):
     """
     Quaternion -> yaw
-
-    返回范围约为 [-pi, pi]
+    返回范围 [-pi, pi]
     """
 
     siny_cosp = 2.0 * (
@@ -41,7 +40,8 @@ class TrajectoryRecorder(Node):
     def __init__(
         self,
         output_prefix,
-        model_name
+        model_name,
+        ready_file
     ):
         super().__init__(
             'trajectory_recorder'
@@ -56,8 +56,15 @@ class TrajectoryRecorder(Node):
         ])
 
         self.model_name = model_name
+        self.ready_file = ready_file
+
         self.start_time = None
         self.model_index = None
+
+        # 是否已经真正收到两种数据
+        self.got_odom = False
+        self.got_truth = False
+        self.ready_created = False
 
         # ------------------------------
         # 输出文件
@@ -78,7 +85,6 @@ class TrajectoryRecorder(Node):
         )
 
         if output_dir:
-
             os.makedirs(
                 output_dir,
                 exist_ok=True
@@ -150,7 +156,7 @@ class TrajectoryRecorder(Node):
 
     def get_relative_time(self):
         """
-        使用 ROS 仿真时间。
+        使用 Gazebo /clock。
         """
 
         now = self.get_clock().now()
@@ -166,6 +172,46 @@ class TrajectoryRecorder(Node):
         ).nanoseconds / 1e9
 
         return elapsed
+
+    def update_ready_state(self):
+        """
+        只有 odom 和 truth 都真正收到后，
+        才创建 ready 文件。
+        """
+
+        if self.ready_created:
+            return
+
+        if not (
+            self.got_odom
+            and self.got_truth
+        ):
+            return
+
+        if self.ready_file:
+
+            ready_dir = os.path.dirname(
+                self.ready_file
+            )
+
+            if ready_dir:
+                os.makedirs(
+                    ready_dir,
+                    exist_ok=True
+                )
+
+            with open(
+                self.ready_file,
+                'w'
+            ) as f:
+                f.write('ready\n')
+
+        self.ready_created = True
+
+        self.get_logger().info(
+            'Recorder is ready: '
+            'odom and truth are both available.'
+        )
 
     def odom_callback(self, msg):
         t = self.get_relative_time()
@@ -188,6 +234,9 @@ class TrajectoryRecorder(Node):
             f'{y:.9f}',
             f'{theta:.9f}'
         ])
+
+        self.got_odom = True
+        self.update_ready_state()
 
     def truth_callback(self, msg):
         t = self.get_relative_time()
@@ -213,12 +262,6 @@ class TrajectoryRecorder(Node):
                 )
 
             except ValueError:
-
-                self.get_logger().warning(
-                    f'Gazebo model '
-                    f'"{self.model_name}" '
-                    f'not found'
-                )
 
                 return
 
@@ -246,11 +289,10 @@ class TrajectoryRecorder(Node):
             f'{theta:.9f}'
         ])
 
-    def close_files(self):
-        """
-        刷新并关闭 CSV。
-        """
+        self.got_truth = True
+        self.update_ready_state()
 
+    def close_files(self):
         self.odom_file.flush()
         self.truth_file.flush()
 
@@ -276,13 +318,21 @@ def main():
         help='Gazebo model name'
     )
 
+    parser.add_argument(
+        '--ready-file',
+        type=str,
+        default=None,
+        help='file created when odom and truth are ready'
+    )
+
     args = parser.parse_args()
 
     rclpy.init()
 
     node = TrajectoryRecorder(
         output_prefix=args.output_prefix,
-        model_name=args.model_name
+        model_name=args.model_name,
+        ready_file=args.ready_file
     )
 
     try:
@@ -296,16 +346,6 @@ def main():
         pass
 
     except RuntimeError as exc:
-        """
-        ROS 2 Humble 中进程收到 SIGINT 时，
-        executor 有可能正处于 take_message()。
-
-        此时偶尔会抛出：
-        Unable to convert call argument to Python object
-
-        数据已经通过 line buffering 写入 CSV，
-        finally 中再 flush/close。
-        """
 
         if (
             'Unable to convert call argument '
@@ -317,7 +357,6 @@ def main():
     finally:
 
         node.close_files()
-
         node.destroy_node()
 
         if rclpy.ok():
