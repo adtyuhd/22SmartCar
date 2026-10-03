@@ -1,0 +1,74 @@
+digraph TF_Tree
+{
+    rankdir=TB;
+
+    graph [
+        label="Smart Car TF Tree",
+        labelloc="t",
+        fontsize=20
+    ];
+
+    node [
+        shape=box,
+        fontsize=11
+    ];
+
+    edge [
+        fontsize=10
+    ];
+
+    "odom" -> "base_footprint"
+    [
+        label="dynamic TF\n~50 Hz\nAckermann odometry"
+    ];
+
+    "base_footprint" -> "base_link"
+    [
+        label="fixed\nz = 0.05 m"
+    ];
+
+    "base_link" -> "lidar_link"
+    [
+        label="fixed\nz = 0.085 m"
+    ];
+
+    "base_link" -> "camera_link"
+    [
+        label="fixed\nx = 0.22 m\nz = 0.12 m"
+    ];
+
+    "camera_link" -> "camera_optical_link"
+    [
+        label="fixed"
+    ];
+
+    "base_link" -> "front_left_steering_link"
+    [
+        label="steering joint\n~30 Hz"
+    ];
+
+    "front_left_steering_link" -> "front_left_wheel"
+    [
+        label="wheel joint\n~30 Hz"
+    ];
+
+    "base_link" -> "front_right_steering_link"
+    [
+        label="steering joint\n~30 Hz"
+    ];
+
+    "front_right_steering_link" -> "front_right_wheel"
+    [
+        label="wheel joint\n~30 Hz"
+    ];
+
+    "base_link" -> "rear_left_wheel"
+    [
+        label="wheel joint\n~30 Hz"
+    ];
+
+    "base_link" -> "rear_right_wheel"
+    [
+        label="wheel joint\n~30 Hz"
+    ];
+}
