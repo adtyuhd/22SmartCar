@@ -2,6 +2,11 @@
 
 import argparse
 import math
+import os
+import signal
+import subprocess
+import sys
+import time
 
 import rclpy
 from rclpy.node import Node
@@ -13,8 +18,8 @@ from geometry_msgs.msg import Twist
 WHEELBASE = 0.28
 MAX_STEERING_ANGLE = math.radians(30.0)
 
-# 根据 Gazebo 实测得到：
-# R = 0.6 m, v = 0.2 m/s 时
+# Gazebo 实测标定：
+# R = 0.6 m, v = 0.2 m/s 时，
 # 理论 4.712 s 会明显过转，
 # 实测约 3.93 s 对应真实 90°。
 TURN_TIME_SCALE = 0.834
@@ -51,6 +56,10 @@ class SquareDriver(Node):
         self.cmd_pub.publish(msg)
 
     def wait_for_clock(self):
+        """
+        等待 Gazebo /clock 有效。
+        """
+
         while rclpy.ok():
 
             rclpy.spin_once(
@@ -66,8 +75,7 @@ class SquareDriver(Node):
         按照给定速度运行指定的仿真时间。
         """
 
-        # 先立即发送一次命令，
-        # 避免计时已经开始但车辆还没收到速度命令。
+        # 一开始立刻发送一次命令
         self.publish_cmd(
             linear_x,
             angular_z
@@ -128,12 +136,6 @@ class SquareDriver(Node):
     def turn_left_90(self, speed, radius):
         """
         左转 90°。
-
-        理论：
-            omega = v / R
-            t = (pi / 2) / omega
-
-        Gazebo 中再乘实测标定系数。
         """
 
         angular_velocity = speed / radius
@@ -186,6 +188,73 @@ class SquareDriver(Node):
             )
 
 
+def start_recorder(output_dir):
+    """
+    启动 record_traj.py。
+
+    output_dir 例如：
+        data/test_run
+
+    最终生成：
+        data/test_run/run_01_odom.csv
+        data/test_run/run_01_truth.csv
+    """
+
+    os.makedirs(
+        output_dir,
+        exist_ok=True
+    )
+
+    script_dir = os.path.dirname(
+        os.path.abspath(__file__)
+    )
+
+    recorder_script = os.path.join(
+        script_dir,
+        'record_traj.py'
+    )
+
+    output_prefix = os.path.join(
+        output_dir,
+        'run_01'
+    )
+
+    process = subprocess.Popen([
+        sys.executable,
+        recorder_script,
+        '--output-prefix',
+        output_prefix
+    ])
+
+    return process
+
+
+def stop_recorder(process):
+    """
+    给记录器发送 Ctrl+C 等价的 SIGINT，
+    让它正常关闭 CSV 文件。
+    """
+
+    if process is None:
+        return
+
+    if process.poll() is None:
+
+        process.send_signal(
+            signal.SIGINT
+        )
+
+        try:
+            process.wait(
+                timeout=5
+            )
+
+        except subprocess.TimeoutExpired:
+
+            process.terminate()
+            process.wait()
+
+
 def main():
 
     parser = argparse.ArgumentParser()
@@ -209,6 +278,13 @@ def main():
         type=float,
         default=0.6,
         help='corner turn radius in meters'
+    )
+
+    parser.add_argument(
+        '--out',
+        type=str,
+        default=None,
+        help='directory for recorded CSV files'
     )
 
     args = parser.parse_args()
@@ -251,6 +327,8 @@ def main():
             f'but limit is 30.00 deg'
         )
 
+    recorder_process = None
+
     rclpy.init()
 
     node = SquareDriver()
@@ -283,6 +361,21 @@ def main():
             f'{TURN_TIME_SCALE:.3f}'
         )
 
+        # 如果给了 --out，就自动启动记录器
+        if args.out is not None:
+
+            node.get_logger().info(
+                '========== START RECORDER =========='
+            )
+
+            recorder_process = start_recorder(
+                args.out
+            )
+
+            # 给记录器一点时间完成 ROS 节点初始化
+            time.sleep(1.0)
+
+        # 跑一圈
         for i in range(4):
 
             node.get_logger().info(
@@ -299,6 +392,11 @@ def main():
                 radius=args.turn_radius
             )
 
+        node.stop()
+
+        # 停车后再多记录一小段
+        time.sleep(1.0)
+
         node.get_logger().info(
             '========== ONE LAP FINISHED =========='
         )
@@ -307,9 +405,14 @@ def main():
 
         node.stop()
 
+        stop_recorder(
+            recorder_process
+        )
+
         node.destroy_node()
 
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':
