@@ -1,0 +1,18 @@
+# ROS 2 build products
+build/
+install/
+log/
+
+# Python
+__pycache__/
+*.pyc
+
+# Local plotting virtual environment
+.plot_venv/
+
+# Temporary experiment data
+data/test_*/
+
+# tf2_tools temporary timestamped files
+plots/frames_*.gv
+plots/frames_*.pdf
