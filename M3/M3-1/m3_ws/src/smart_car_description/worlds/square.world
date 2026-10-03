@@ -1,0 +1,72 @@
+<?xml version="1.0"?>
+
+<sdf version="1.6">
+
+  <world name="square_world">
+
+    <!-- ==================== 物理参数 ==================== -->
+    <physics name="default_physics" type="ode">
+
+      <!--
+        每次物理积分最大前进 0.001 s
+        即 1 ms
+      -->
+      <max_step_size>0.001</max_step_size>
+
+      <!--
+        1000 × 0.001 = 1
+        目标实时倍率约为 1.0
+      -->
+      <real_time_update_rate>1000.0</real_time_update_rate>
+
+      <real_time_factor>1.0</real_time_factor>
+
+    </physics>
+
+
+    <!-- ==================== 重力 ==================== -->
+
+    <gravity>0 0 -9.81</gravity>
+
+
+    <!-- ==================== 光源 ==================== -->
+
+    <include>
+      <uri>model://sun</uri>
+    </include>
+
+
+    <!-- ==================== 地面 ==================== -->
+
+    <include>
+      <uri>model://ground_plane</uri>
+    </include>
+
+
+    <!-- ==================== Gazebo ROS 状态插件 ==================== -->
+
+    <!--
+      将 Gazebo 内部的模型真实状态发布到 ROS 2。
+
+      M3-1 中主要使用：
+        /gazebo/model_states
+
+      它属于仿真真值，只能用于记录和对比，
+      不能拿它反馈修正 /odom。
+    -->
+    <plugin name="gazebo_ros_state"
+            filename="libgazebo_ros_state.so">
+
+      <ros>
+        <namespace>/gazebo</namespace>
+      </ros>
+
+      <!-- 状态发布频率，单位 Hz -->
+      <update_rate>50.0</update_rate>
+
+    </plugin>
+
+
+  </world>
+
+</sdf>
