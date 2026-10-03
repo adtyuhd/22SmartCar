@@ -6,13 +6,13 @@ import os
 import signal
 import subprocess
 import sys
-import time
 
 import rclpy
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 
 from geometry_msgs.msg import Twist
+from std_srvs.srv import Empty
 
 
 WHEELBASE = 0.28
@@ -20,8 +20,7 @@ MAX_STEERING_ANGLE = math.radians(30.0)
 
 # Gazebo 实测标定：
 # R = 0.6 m, v = 0.2 m/s 时，
-# 理论 4.712 s 会明显过转，
-# 实测约 3.93 s 对应真实 90°。
+# 约 3.93 s 对应真实 90° 转弯。
 TURN_TIME_SCALE = 0.834
 
 
@@ -44,7 +43,13 @@ class SquareDriver(Node):
             10
         )
 
-        # 20 Hz
+        # 使用 reset_world：
+        # 复位 Gazebo 物理世界，但不让 /clock 倒退。
+        self.reset_client = self.create_client(
+            Empty,
+            '/reset_world'
+        )
+
         self.publish_period = 0.05
 
     def publish_cmd(self, linear_x, angular_z):
@@ -70,19 +75,97 @@ class SquareDriver(Node):
             if self.get_clock().now().nanoseconds > 0:
                 return
 
-    def run_segment(self, linear_x, angular_z, duration):
+    def wait_sim_duration(self, duration):
+        """
+        等待指定仿真时间，同时持续处理 /clock。
+        """
+
+        start_time = None
+
+        while rclpy.ok():
+
+            rclpy.spin_once(
+                self,
+                timeout_sec=0.02
+            )
+
+            now = self.get_clock().now()
+
+            if now.nanoseconds <= 0:
+                continue
+
+            if start_time is None:
+                start_time = now
+                continue
+
+            elapsed = (
+                now - start_time
+            ).nanoseconds / 1e9
+
+            if elapsed >= duration:
+                return
+
+    def reset_world(self):
+        """
+        将 Gazebo 世界恢复到初始物理状态。
+
+        注意：
+        /odom 不会清零，所以每一圈的误差
+        都用该圈自己的 start/end 做相对计算。
+        """
+
+        self.stop()
+
+        while not self.reset_client.wait_for_service(
+            timeout_sec=1.0
+        ):
+            self.get_logger().info(
+                'Waiting for /reset_world ...'
+            )
+
+        request = Empty.Request()
+
+        future = self.reset_client.call_async(
+            request
+        )
+
+        rclpy.spin_until_future_complete(
+            self,
+            future
+        )
+
+        if future.exception() is not None:
+            raise RuntimeError(
+                f'/reset_world failed: '
+                f'{future.exception()}'
+            )
+
+        self.stop()
+
+    def run_segment(
+        self,
+        linear_x,
+        angular_z,
+        duration
+    ):
         """
         按照给定速度运行指定的仿真时间。
         """
 
-        # 一开始立刻发送一次命令
-        self.publish_cmd(
-            linear_x,
-            angular_z
+        # 先更新一次 /clock
+        rclpy.spin_once(
+            self,
+            timeout_sec=0.02
         )
 
         start_time = self.get_clock().now()
         last_publish_time = start_time
+
+        # 立即发送第一条速度指令
+        self.publish_cmd(
+            linear_x,
+            angular_z
+        )
 
         while rclpy.ok():
 
@@ -113,11 +196,11 @@ class SquareDriver(Node):
 
                 last_publish_time = now
 
-    def drive_straight(self, distance, speed):
-        """
-        直行指定距离。
-        """
-
+    def drive_straight(
+        self,
+        distance,
+        speed
+    ):
         duration = distance / speed
 
         self.get_logger().info(
@@ -133,11 +216,11 @@ class SquareDriver(Node):
             duration=duration
         )
 
-    def turn_left_90(self, speed, radius):
-        """
-        左转 90°。
-        """
-
+    def turn_left_90(
+        self,
+        speed,
+        radius
+    ):
         angular_velocity = speed / radius
 
         turn_angle = math.pi / 2.0
@@ -159,9 +242,12 @@ class SquareDriver(Node):
             f'Left turn: '
             f'radius={radius:.3f} m, '
             f'angular_velocity={angular_velocity:.3f} rad/s, '
-            f'steering_angle={math.degrees(steering_angle):.2f} deg, '
-            f'theoretical_duration={theoretical_duration:.3f} s, '
-            f'calibrated_duration={calibrated_duration:.3f} s'
+            f'steering_angle='
+            f'{math.degrees(steering_angle):.2f} deg, '
+            f'theoretical_duration='
+            f'{theoretical_duration:.3f} s, '
+            f'calibrated_duration='
+            f'{calibrated_duration:.3f} s'
         )
 
         self.run_segment(
@@ -172,7 +258,7 @@ class SquareDriver(Node):
 
     def stop(self):
         """
-        连续发送停止命令。
+        连续发送停止指令。
         """
 
         for _ in range(5):
@@ -188,16 +274,16 @@ class SquareDriver(Node):
             )
 
 
-def start_recorder(output_dir):
+def start_recorder(
+    output_dir,
+    lap_number
+):
     """
-    启动 record_traj.py。
+    每圈启动独立记录器。
 
-    output_dir 例如：
-        data/test_run
-
-    最终生成：
-        data/test_run/run_01_odom.csv
-        data/test_run/run_01_truth.csv
+    例如：
+        run_01_odom.csv
+        run_01_truth.csv
     """
 
     os.makedirs(
@@ -216,7 +302,7 @@ def start_recorder(output_dir):
 
     output_prefix = os.path.join(
         output_dir,
-        'run_01'
+        f'run_{lap_number:02d}'
     )
 
     process = subprocess.Popen([
@@ -230,11 +316,6 @@ def start_recorder(output_dir):
 
 
 def stop_recorder(process):
-    """
-    给记录器发送 Ctrl+C 等价的 SIGINT，
-    让它正常关闭 CSV 文件。
-    """
-
     if process is None:
         return
 
@@ -250,7 +331,6 @@ def stop_recorder(process):
             )
 
         except subprocess.TimeoutExpired:
-
             process.terminate()
             process.wait()
 
@@ -258,6 +338,13 @@ def stop_recorder(process):
 def main():
 
     parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        '--laps',
+        type=int,
+        default=1,
+        help='number of laps'
+    )
 
     parser.add_argument(
         '--side',
@@ -288,6 +375,11 @@ def main():
     )
 
     args = parser.parse_args()
+
+    if args.laps <= 0:
+        parser.error(
+            '--laps must be greater than 0'
+        )
 
     if args.side <= 0.0:
         parser.error(
@@ -342,6 +434,10 @@ def main():
         )
 
         node.get_logger().info(
+            f'Laps: {args.laps}'
+        )
+
+        node.get_logger().info(
             f'Outer side length: '
             f'{args.side:.3f} m'
         )
@@ -361,44 +457,79 @@ def main():
             f'{TURN_TIME_SCALE:.3f}'
         )
 
-        # 如果给了 --out，就自动启动记录器
-        if args.out is not None:
+        for lap in range(
+            1,
+            args.laps + 1
+        ):
 
             node.get_logger().info(
-                '========== START RECORDER =========='
+                f'========== LAP '
+                f'{lap}/{args.laps} =========='
             )
 
-            recorder_process = start_recorder(
-                args.out
+            # 每圈开始前复位 Gazebo 物理位置
+            node.get_logger().info(
+                'Resetting world...'
             )
 
-            # 给记录器一点时间完成 ROS 节点初始化
-            time.sleep(1.0)
+            node.reset_world()
 
-        # 跑一圈
-        for i in range(4):
+            # 等待车辆落稳
+            node.wait_sim_duration(
+                1.0
+            )
+
+            # 每圈单独记录
+            if args.out is not None:
+
+                recorder_process = start_recorder(
+                    args.out,
+                    lap
+                )
+
+                # 等待记录器建立订阅
+                node.wait_sim_duration(
+                    1.0
+                )
+
+            # 四条边
+            for side_index in range(4):
+
+                node.get_logger().info(
+                    f'----- LAP {lap} '
+                    f'SIDE {side_index + 1}/4 -----'
+                )
+
+                node.drive_straight(
+                    distance=straight_length,
+                    speed=args.speed
+                )
+
+                node.turn_left_90(
+                    speed=args.speed,
+                    radius=args.turn_radius
+                )
+
+            node.stop()
+
+            # 停车后继续记录半秒
+            node.wait_sim_duration(
+                0.5
+            )
+
+            stop_recorder(
+                recorder_process
+            )
+
+            recorder_process = None
 
             node.get_logger().info(
-                f'========== SIDE {i + 1}/4 =========='
+                f'========== LAP {lap} '
+                f'FINISHED =========='
             )
-
-            node.drive_straight(
-                distance=straight_length,
-                speed=args.speed
-            )
-
-            node.turn_left_90(
-                speed=args.speed,
-                radius=args.turn_radius
-            )
-
-        node.stop()
-
-        # 停车后再多记录一小段
-        time.sleep(1.0)
 
         node.get_logger().info(
-            '========== ONE LAP FINISHED =========='
+            '========== ALL LAPS FINISHED =========='
         )
 
     finally:

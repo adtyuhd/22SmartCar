@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 
 import argparse
@@ -20,6 +19,7 @@ def quaternion_to_yaw(q):
 
     返回范围约为 [-pi, pi]
     """
+
     siny_cosp = 2.0 * (
         q.w * q.z
         + q.x * q.y
@@ -38,8 +38,14 @@ def quaternion_to_yaw(q):
 
 class TrajectoryRecorder(Node):
 
-    def __init__(self, output_prefix, model_name):
-        super().__init__('trajectory_recorder')
+    def __init__(
+        self,
+        output_prefix,
+        model_name
+    ):
+        super().__init__(
+            'trajectory_recorder'
+        )
 
         self.set_parameters([
             Parameter(
@@ -57,12 +63,22 @@ class TrajectoryRecorder(Node):
         # 输出文件
         # ------------------------------
 
-        odom_path = output_prefix + '_odom.csv'
-        truth_path = output_prefix + '_truth.csv'
+        odom_path = (
+            output_prefix
+            + '_odom.csv'
+        )
 
-        output_dir = os.path.dirname(output_prefix)
+        truth_path = (
+            output_prefix
+            + '_truth.csv'
+        )
+
+        output_dir = os.path.dirname(
+            output_prefix
+        )
 
         if output_dir:
+
             os.makedirs(
                 output_dir,
                 exist_ok=True
@@ -90,7 +106,6 @@ class TrajectoryRecorder(Node):
             self.truth_file
         )
 
-        # CSV 表头
         self.odom_writer.writerow([
             't',
             'x',
@@ -124,24 +139,22 @@ class TrajectoryRecorder(Node):
         )
 
         self.get_logger().info(
-            f'Recording odom to: {odom_path}'
+            f'Recording odom to: '
+            f'{odom_path}'
         )
 
         self.get_logger().info(
-            f'Recording truth to: {truth_path}'
+            f'Recording truth to: '
+            f'{truth_path}'
         )
 
     def get_relative_time(self):
         """
-        使用 ROS clock。
-
-        因为 use_sim_time=True，
-        所以这里得到的是 Gazebo /clock 时间。
+        使用 ROS 仿真时间。
         """
 
         now = self.get_clock().now()
 
-        # 仿真时钟还没启动
         if now.nanoseconds <= 0:
             return None
 
@@ -182,18 +195,21 @@ class TrajectoryRecorder(Node):
         if t is None:
             return
 
-        # 第一次收到消息时寻找 smart_car
         if self.model_index is None:
 
             try:
-                self.model_index = msg.name.index(
-                    self.model_name
+
+                self.model_index = (
+                    msg.name.index(
+                        self.model_name
+                    )
                 )
 
                 self.get_logger().info(
                     f'Found Gazebo model '
                     f'"{self.model_name}" '
-                    f'at index {self.model_index}'
+                    f'at index '
+                    f'{self.model_index}'
                 )
 
             except ValueError:
@@ -206,8 +222,9 @@ class TrajectoryRecorder(Node):
 
                 return
 
-        # 防止模型列表发生变化
-        if self.model_index >= len(msg.pose):
+        if self.model_index >= len(
+            msg.pose
+        ):
             self.model_index = None
             return
 
@@ -230,6 +247,13 @@ class TrajectoryRecorder(Node):
         ])
 
     def close_files(self):
+        """
+        刷新并关闭 CSV。
+        """
+
+        self.odom_file.flush()
+        self.truth_file.flush()
+
         self.odom_file.close()
         self.truth_file.close()
 
@@ -262,13 +286,38 @@ def main():
     )
 
     try:
-        rclpy.spin(node)
+
+        rclpy.spin(
+            node
+        )
 
     except KeyboardInterrupt:
+
         pass
 
+    except RuntimeError as exc:
+        """
+        ROS 2 Humble 中进程收到 SIGINT 时，
+        executor 有可能正处于 take_message()。
+
+        此时偶尔会抛出：
+        Unable to convert call argument to Python object
+
+        数据已经通过 line buffering 写入 CSV，
+        finally 中再 flush/close。
+        """
+
+        if (
+            'Unable to convert call argument '
+            'to Python object'
+            not in str(exc)
+        ):
+            raise
+
     finally:
+
         node.close_files()
+
         node.destroy_node()
 
         if rclpy.ok():
