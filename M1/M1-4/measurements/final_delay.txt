@@ -1,0 +1,16 @@
+average delay: 0.007
+	min: 0.003s max: 0.017s std dev: 0.00456s window: 29
+average delay: 0.007
+	min: 0.003s max: 0.017s std dev: 0.00449s window: 58
+average delay: 0.007
+	min: 0.003s max: 0.017s std dev: 0.00457s window: 89
+average delay: 0.007
+	min: 0.003s max: 0.017s std dev: 0.00496s window: 119
+average delay: 0.008
+	min: 0.003s max: 0.018s std dev: 0.00529s window: 148
+average delay: 0.009
+	min: 0.003s max: 0.019s std dev: 0.00576s window: 178
+average delay: 0.009
+	min: 0.003s max: 0.019s std dev: 0.00582s window: 209
+average delay: 0.010
+	min: 0.003s max: 0.019s std dev: 0.00599s window: 239

@@ -1,0 +1,15 @@
+header:
+  stamp:
+    sec: 1790993570
+    nanosec: 381988298
+  frame_id: camera_link
+height: 480
+width: 640
+encoding: mono8
+is_bigendian: 0
+step: 640
+data:
+- 240
+- 240
+- 242
+- 243
