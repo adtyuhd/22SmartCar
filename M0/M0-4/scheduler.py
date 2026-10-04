@@ -1,5 +1,6 @@
 import argparse
 import json
+import math
 import random
 import sys
 import time
@@ -83,11 +84,19 @@ def load_config(path):
     suffix = path.suffix.lower()
 
     if suffix in [".yaml", ".yml"]:
-        with open(path, "r") as f:
+        with open(
+            path,
+            "r",
+            encoding="utf-8",
+        ) as f:
             config = yaml.safe_load(f)
 
     elif suffix == ".json":
-        with open(path, "r") as f:
+        with open(
+            path,
+            "r",
+            encoding="utf-8",
+        ) as f:
             config = json.load(f)
 
     else:
@@ -99,6 +108,15 @@ def load_config(path):
     return config
 
 
+# ---------- 数字检查 ----------
+def is_valid_number(value):
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+    )
+
+
 # ---------- 检查配置 ----------
 def validate_config(config):
     if not isinstance(config, dict):
@@ -106,6 +124,20 @@ def validate_config(config):
             "config must be an object"
         )
 
+    # ---------- 检查全局 timeout ----------
+    if "timeout" in config:
+        timeout = config["timeout"]
+
+        if (
+            not is_valid_number(timeout)
+            or timeout <= 0
+        ):
+            raise ValueError(
+                "config timeout must be "
+                "a number greater than 0"
+            )
+
+    # ---------- 检查 tasks ----------
     if "tasks" not in config:
         raise ValueError(
             "config must contain 'tasks'"
@@ -126,6 +158,7 @@ def validate_config(config):
 
     names = set()
 
+    # ---------- 第一轮：检查每个任务本身 ----------
     for task in config["tasks"]:
         if not isinstance(task, dict):
             raise ValueError(
@@ -147,6 +180,19 @@ def validate_config(config):
                 )
 
         name = task["name"]
+        duration = task["duration"]
+        success_rate = task["success_rate"]
+        dependencies = task["dependencies"]
+
+        # ---------- name ----------
+        if (
+            not isinstance(name, str)
+            or not name.strip()
+        ):
+            raise ValueError(
+                "task name must be "
+                "a non-empty string"
+            )
 
         if name in names:
             raise ValueError(
@@ -155,35 +201,29 @@ def validate_config(config):
 
         names.add(name)
 
-        duration = task["duration"]
-        success_rate = task["success_rate"]
-        dependencies = task["dependencies"]
-
+        # ---------- duration ----------
         if (
-            not isinstance(
-                duration,
-                (int, float),
-            )
+            not is_valid_number(duration)
             or duration < 0
         ):
             raise ValueError(
                 f"task '{name}': "
-                f"duration must be >= 0"
+                f"duration must be "
+                f"a number >= 0"
             )
 
+        # ---------- success_rate ----------
         if (
-            not isinstance(
-                success_rate,
-                (int, float),
-            )
+            not is_valid_number(success_rate)
             or not 0 <= success_rate <= 1
         ):
             raise ValueError(
                 f"task '{name}': "
                 f"success_rate must be "
-                f"between 0 and 1"
+                f"a number between 0 and 1"
             )
 
+        # ---------- dependencies ----------
         if not isinstance(
             dependencies,
             list,
@@ -193,6 +233,33 @@ def validate_config(config):
                 f"dependencies must be a list"
             )
 
+        for dependency in dependencies:
+            if (
+                not isinstance(dependency, str)
+                or not dependency.strip()
+            ):
+                raise ValueError(
+                    f"task '{name}': "
+                    f"each dependency must be "
+                    f"a non-empty string"
+                )
+
+        if len(dependencies) != len(
+            set(dependencies)
+        ):
+            raise ValueError(
+                f"task '{name}': "
+                f"duplicate dependencies "
+                f"are not allowed"
+            )
+
+        if name in dependencies:
+            raise ValueError(
+                f"task '{name}' cannot "
+                f"depend on itself"
+            )
+
+    # ---------- 第二轮：检查依赖是否存在 ----------
     for task in config["tasks"]:
         name = task["name"]
 
@@ -313,7 +380,7 @@ def run_task(
         # 每次尝试结束时更新时间
         ended_at = time.time()
 
-        # sleep 后马上检查 timeout
+        # sleep 后立即检查 timeout
         if is_timeout(
             program_start,
             timeout,
@@ -400,7 +467,10 @@ def main():
 
     # 命令行 timeout 优先于配置文件 timeout
     if args.timeout is not None:
-        if args.timeout <= 0:
+        if (
+            not is_valid_number(args.timeout)
+            or args.timeout <= 0
+        ):
             raise ValueError(
                 "--timeout must be "
                 "greater than 0"
@@ -443,8 +513,7 @@ def main():
     # 保存完整报告数据
     results = {}
 
-    # 新增：
-    # 单独记录整个 scheduler 是否发生 timeout
+    # 记录整个 scheduler 是否发生 timeout
     timed_out = False
 
     # ---------- 按拓扑顺序执行 ----------
@@ -534,17 +603,15 @@ def main():
 
             break
 
-    # ---------- 新增：补全超时后未执行任务 ----------
+    # ---------- 补全超时后未执行任务 ----------
     if timed_out:
         for name in order:
 
-            # 已经执行/处理过的任务不修改
             if name in results:
                 continue
 
             task = task_map[name]
 
-            # 未执行任务统一记录为 TIMEOUT
             statuses[name] = "TIMEOUT"
 
             results[name] = {
@@ -562,7 +629,6 @@ def main():
     )
 
     # 按配置文件原始顺序生成报告
-    # 不直接使用 results.values()
     report_tasks = []
 
     for task in config["tasks"]:
@@ -635,4 +701,3 @@ if __name__ == "__main__":
             f"Error: {e}"
         )
         sys.exit(1)
-
