@@ -16,3 +16,6 @@ data/test_*/
 # tf2_tools temporary timestamped files
 plots/frames_*.gv
 plots/frames_*.pdf
+# Local intermediate experiment files
+data/
+plots/
