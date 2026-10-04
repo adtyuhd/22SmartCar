@@ -2,7 +2,6 @@
 
 import argparse
 import csv
-import glob
 import math
 import os
 import statistics
@@ -10,7 +9,7 @@ import statistics
 
 def normalize_angle(angle):
     """
-    将角度归一化到 [-pi, pi]。
+    Normalize angle to (-pi, pi].
     """
     return math.atan2(
         math.sin(angle),
@@ -20,9 +19,9 @@ def normalize_angle(angle):
 
 def read_first_last(csv_path):
     """
-    读取一份轨迹 CSV 的第一条和最后一条数据。
+    Read the first and last data rows from:
+    t,x,y,theta
     """
-
     with open(csv_path, 'r', newline='') as f:
         reader = csv.DictReader(f)
         rows = list(reader)
@@ -35,31 +34,32 @@ def read_first_last(csv_path):
     first = rows[0]
     last = rows[-1]
 
-    start = {
-        'x': float(first['x']),
-        'y': float(first['y']),
-        'theta': float(first['theta']),
+    return {
+        'start_x': float(first['x']),
+        'start_y': float(first['y']),
+        'start_theta': float(first['theta']),
+        'end_x': float(last['x']),
+        'end_y': float(last['y']),
+        'end_theta': float(last['theta']),
     }
 
-    end = {
-        'x': float(last['x']),
-        'y': float(last['y']),
-        'theta': float(last['theta']),
-    }
 
-    return start, end
+def calculate_error(csv_path):
+    data = read_first_last(csv_path)
 
+    dx = (
+        data['end_x']
+        - data['start_x']
+    )
 
-def calculate_error(start, end):
-    """
-    计算一圈的闭环误差。
-    """
-
-    dx = end['x'] - start['x']
-    dy = end['y'] - start['y']
+    dy = (
+        data['end_y']
+        - data['start_y']
+    )
 
     dtheta = normalize_angle(
-        end['theta'] - start['theta']
+        data['end_theta']
+        - data['start_theta']
     )
 
     position_error = math.hypot(
@@ -67,19 +67,18 @@ def calculate_error(start, end):
         dy
     )
 
+    # 题目要求角度“偏差”，因此取绝对值
+    heading_error_deg = abs(
+        math.degrees(dtheta)
+    )
+
     return {
-        'dx': dx,
-        'dy': dy,
-        'dtheta': dtheta,
         'position_error': position_error,
+        'heading_error_deg': heading_error_deg,
     }
 
 
 def mean_std(values):
-    """
-    返回平均值和样本标准差。
-    """
-
     mean_value = statistics.mean(values)
 
     if len(values) >= 2:
@@ -90,111 +89,196 @@ def mean_std(values):
     return mean_value, std_value
 
 
-def analyze_group(files):
-    """
-    分析一组 odom 或 truth CSV。
-    """
+def main():
+    parser = argparse.ArgumentParser()
 
-    results = []
-
-    for csv_path in files:
-
-        start, end = read_first_last(
-            csv_path
-        )
-
-        error = calculate_error(
-            start,
-            end
-        )
-
-        results.append({
-            'file': os.path.basename(csv_path),
-            **error
-        })
-
-    return results
-
-
-def print_results(name, results):
-    print(
-        f'========== {name} =========='
+    parser.add_argument(
+        '--dir',
+        type=str,
+        required=True,
+        help='directory containing run_XX_odom.csv and run_XX_truth.csv'
     )
 
-    for index, result in enumerate(
-        results,
+    args = parser.parse_args()
+
+    data_dir = args.dir
+
+    odom_files = sorted([
+        name
+        for name in os.listdir(data_dir)
+        if name.startswith('run_')
+        and name.endswith('_odom.csv')
+    ])
+
+    truth_files = sorted([
+        name
+        for name in os.listdir(data_dir)
+        if name.startswith('run_')
+        and name.endswith('_truth.csv')
+    ])
+
+    if len(odom_files) != len(truth_files):
+        raise RuntimeError(
+            'Number of odom files and truth files does not match.'
+        )
+
+    if not odom_files:
+        raise RuntimeError(
+            f'No run files found in {data_dir}'
+        )
+
+    print(
+        f'Found {len(odom_files)} runs.'
+    )
+
+    odom_results = []
+    truth_results = []
+
+    for index, (
+        odom_name,
+        truth_name
+    ) in enumerate(
+        zip(
+            odom_files,
+            truth_files
+        ),
         start=1
     ):
+        odom_path = os.path.join(
+            data_dir,
+            odom_name
+        )
 
-        heading_error_deg = math.degrees(
-            result['dtheta']
+        truth_path = os.path.join(
+            data_dir,
+            truth_name
+        )
+
+        odom_error = calculate_error(
+            odom_path
+        )
+
+        truth_error = calculate_error(
+            truth_path
+        )
+
+        odom_results.append(
+            odom_error
+        )
+
+        truth_results.append(
+            truth_error
+        )
+
+        print()
+        print(
+            f'Run {index:02d}'
         )
 
         print(
-            f'Run {index:02d}: '
-            f'position_error='
-            f'{result["position_error"]:.4f} m, '
-            f'dtheta='
-            f'{heading_error_deg:.2f} deg'
+            '  ODOM:  '
+            f'{odom_error["position_error"]:.4f} m, '
+            f'{odom_error["heading_error_deg"]:.2f} deg'
         )
 
-    position_errors = [
-        result['position_error']
-        for result in results
+        print(
+            '  TRUTH: '
+            f'{truth_error["position_error"]:.4f} m, '
+            f'{truth_error["heading_error_deg"]:.2f} deg'
+        )
+
+    odom_position_values = [
+        item['position_error']
+        for item in odom_results
     ]
 
-    angle_errors_deg = [
-        math.degrees(result['dtheta'])
-        for result in results
+    odom_heading_values = [
+        item['heading_error_deg']
+        for item in odom_results
     ]
 
-    pos_mean, pos_std = mean_std(
-        position_errors
+    truth_position_values = [
+        item['position_error']
+        for item in truth_results
+    ]
+
+    truth_heading_values = [
+        item['heading_error_deg']
+        for item in truth_results
+    ]
+
+    (
+        odom_position_mean,
+        odom_position_std
+    ) = mean_std(
+        odom_position_values
     )
 
-    angle_mean, angle_std = mean_std(
-        angle_errors_deg
+    (
+        odom_heading_mean,
+        odom_heading_std
+    ) = mean_std(
+        odom_heading_values
+    )
+
+    (
+        truth_position_mean,
+        truth_position_std
+    ) = mean_std(
+        truth_position_values
+    )
+
+    (
+        truth_heading_mean,
+        truth_heading_std
+    ) = mean_std(
+        truth_heading_values
     )
 
     print()
-
     print(
-        f'Position error: '
-        f'{pos_mean:.4f} ± '
-        f'{pos_std:.4f} m'
+        '========== ODOM =========='
     )
 
     print(
-        f'Heading error: '
-        f'{angle_mean:.2f} ± '
-        f'{angle_std:.2f} deg'
+        'Position error: '
+        f'{odom_position_mean:.4f} '
+        f'± {odom_position_std:.4f} m'
+    )
+
+    print(
+        'Heading error:  '
+        f'{odom_heading_mean:.2f} '
+        f'± {odom_heading_std:.2f} deg'
     )
 
     print()
+    print(
+        '========== TRUTH =========='
+    )
 
-    return {
-        'position_mean': pos_mean,
-        'position_std': pos_std,
-        'angle_mean_deg': angle_mean,
-        'angle_std_deg': angle_std,
-    }
+    print(
+        'Position error: '
+        f'{truth_position_mean:.4f} '
+        f'± {truth_position_std:.4f} m'
+    )
 
+    print(
+        'Heading error:  '
+        f'{truth_heading_mean:.2f} '
+        f'± {truth_heading_std:.2f} deg'
+    )
 
-def write_summary(
-    output_path,
-    odom_results,
-    truth_results
-):
-    """
-    保存每一圈的闭环误差。
-    """
+    summary_path = os.path.join(
+        data_dir,
+        'summary.csv'
+    )
 
     with open(
-        output_path,
+        summary_path,
         'w',
         newline=''
     ) as f:
-
         writer = csv.writer(f)
 
         writer.writerow([
@@ -202,113 +286,30 @@ def write_summary(
             'odom_position_error',
             'odom_heading_error_deg',
             'truth_position_error',
-            'truth_heading_error_deg'
+            'truth_heading_error_deg',
         ])
 
-        for i in range(
-            len(odom_results)
+        for index, (
+            odom_result,
+            truth_result
+        ) in enumerate(
+            zip(
+                odom_results,
+                truth_results
+            ),
+            start=1
         ):
-
-            odom_heading_deg = math.degrees(
-                odom_results[i]['dtheta']
-            )
-
-            truth_heading_deg = math.degrees(
-                truth_results[i]['dtheta']
-            )
-
             writer.writerow([
-                i + 1,
-                f'{odom_results[i]["position_error"]:.9f}',
-                f'{odom_heading_deg:.9f}',
-                f'{truth_results[i]["position_error"]:.9f}',
-                f'{truth_heading_deg:.9f}',
+                index,
+                f'{odom_result["position_error"]:.9f}',
+                f'{odom_result["heading_error_deg"]:.9f}',
+                f'{truth_result["position_error"]:.9f}',
+                f'{truth_result["heading_error_deg"]:.9f}',
             ])
 
-
-def main():
-
-    parser = argparse.ArgumentParser()
-
-    parser.add_argument(
-        '--dir',
-        required=True,
-        help='directory containing run_XX CSV files'
-    )
-
-    args = parser.parse_args()
-
-    odom_files = sorted(
-        glob.glob(
-            os.path.join(
-                args.dir,
-                'run_*_odom.csv'
-            )
-        )
-    )
-
-    truth_files = sorted(
-        glob.glob(
-            os.path.join(
-                args.dir,
-                'run_*_truth.csv'
-            )
-        )
-    )
-
-    if not odom_files:
-        raise RuntimeError(
-            'No odom CSV files found.'
-        )
-
-    if not truth_files:
-        raise RuntimeError(
-            'No truth CSV files found.'
-        )
-
-    if len(odom_files) != len(truth_files):
-        raise RuntimeError(
-            'Number of odom and truth '
-            'files does not match.'
-        )
-
-    print(
-        f'Found {len(odom_files)} runs.'
-    )
-
     print()
-
-    odom_results = analyze_group(
-        odom_files
-    )
-
-    truth_results = analyze_group(
-        truth_files
-    )
-
-    print_results(
-        'ODOM',
-        odom_results
-    )
-
-    print_results(
-        'GAZEBO TRUTH',
-        truth_results
-    )
-
-    summary_path = os.path.join(
-        args.dir,
-        'summary.csv'
-    )
-
-    write_summary(
-        summary_path,
-        odom_results,
-        truth_results
-    )
-
     print(
-        f'Summary saved to: '
+        f'Saved summary to: '
         f'{summary_path}'
     )
 
