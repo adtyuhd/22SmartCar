@@ -1,0 +1,253 @@
+
+<?xml version="1.0"?>
+<sdf version="1.6">
+
+  <world name="m3_2_slam_world">
+
+    <!-- ========== 1. 物理环境 ========== -->
+    <physics name="default_physics" type="ode">
+      <max_step_size>0.001</max_step_size>
+      <real_time_update_rate>1000</real_time_update_rate>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+
+    <gravity>0 0 -9.81</gravity>
+
+    <include>
+      <uri>model://sun</uri>
+    </include>
+
+    <include>
+      <uri>model://ground_plane</uri>
+    </include>
+
+    <!-- ========== 2. 四面外围墙 ========== -->
+
+    <!-- 南墙 -->
+    <model name="south_wall">
+      <static>true</static>
+      <pose>0 -6.2 0.75 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box><size>16.4 0.2 1.5</size></box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box><size>16.4 0.2 1.5</size></box>
+          </geometry>
+          <material>
+            <ambient>0.7 0.7 0.7 1</ambient>
+            <diffuse>0.7 0.7 0.7 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- 北墙 -->
+    <model name="north_wall">
+      <static>true</static>
+      <pose>0 6.2 0.75 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box><size>16.4 0.2 1.5</size></box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box><size>16.4 0.2 1.5</size></box>
+          </geometry>
+          <material>
+            <ambient>0.7 0.7 0.7 1</ambient>
+            <diffuse>0.7 0.7 0.7 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- 西墙 -->
+    <model name="west_wall">
+      <static>true</static>
+      <pose>-8.2 0 0.75 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box><size>0.2 12.4 1.5</size></box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box><size>0.2 12.4 1.5</size></box>
+          </geometry>
+          <material>
+            <ambient>0.7 0.7 0.7 1</ambient>
+            <diffuse>0.7 0.7 0.7 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- 东墙 -->
+    <model name="east_wall">
+      <static>true</static>
+      <pose>8.2 0 0.75 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box><size>0.2 12.4 1.5</size></box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box><size>0.2 12.4 1.5</size></box>
+          </geometry>
+          <material>
+            <ambient>0.7 0.7 0.7 1</ambient>
+            <diffuse>0.7 0.7 0.7 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- ========== 3. 中央障碍区 ========== -->
+
+    <model name="central_block">
+      <static>true</static>
+      <pose>0 0 0.75 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box><size>12 8 1.5</size></box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box><size>12 8 1.5</size></box>
+          </geometry>
+          <material>
+            <ambient>0.45 0.55 0.7 1</ambient>
+            <diffuse>0.45 0.55 0.7 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- ========== 4. 自定难点：窄通道 ========== -->
+
+    <!-- 北侧通道从约 2.1 m 局部收窄到 1.15 m -->
+    <model name="narrow_passage_obstacle">
+      <static>true</static>
+      <pose>2 5.625 0.75 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box><size>1.0 0.95 1.5</size></box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box><size>1.0 0.95 1.5</size></box>
+          </geometry>
+          <material>
+            <ambient>0.8 0.35 0.1 1</ambient>
+            <diffuse>0.8 0.35 0.1 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- ========== 5. 增强难点：不对称几何特征 ========== -->
+
+    <!-- 西侧特征 A：短而宽的突出墙 -->
+    <model name="feature_west_upper">
+      <static>true</static>
+      <pose>-6.35 2.0 0.75 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box><size>0.7 0.8 1.5</size></box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box><size>0.7 0.8 1.5</size></box>
+          </geometry>
+          <material>
+            <ambient>0.45 0.55 0.7 1</ambient>
+            <diffuse>0.45 0.55 0.7 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- 西侧特征 B：细长突出墙 -->
+    <model name="feature_west_lower">
+      <static>true</static>
+      <pose>-6.2 -2.2 0.75 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box><size>0.4 1.1 1.5</size></box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box><size>0.4 1.1 1.5</size></box>
+          </geometry>
+          <material>
+            <ambient>0.45 0.55 0.7 1</ambient>
+            <diffuse>0.45 0.55 0.7 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- 南侧特征 A -->
+    <model name="feature_south_left">
+      <static>true</static>
+      <pose>-3.5 -4.25 0.75 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box><size>0.6 0.5 1.5</size></box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box><size>0.6 0.5 1.5</size></box>
+          </geometry>
+          <material>
+            <ambient>0.45 0.55 0.7 1</ambient>
+            <diffuse>0.45 0.55 0.7 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- 南侧特征 B -->
+    <model name="feature_south_right">
+      <static>true</static>
+      <pose>-0.8 -4.2 0.75 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box><size>0.45 0.4 1.5</size></box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box><size>0.45 0.4 1.5</size></box>
+          </geometry>
+          <material>
+            <ambient>0.45 0.55 0.7 1</ambient>
+            <diffuse>0.45 0.55 0.7 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+  </world>
+
+</sdf>
