@@ -1,0 +1,155 @@
+slam_toolbox:
+  ros__parameters:
+
+    # ==========================================
+    # 1. 仿真时间与工作模式
+    # ==========================================
+
+    # 使用 Gazebo 仿真时间，而不是电脑系统时间
+    use_sim_time: true
+
+    # mapping 表示建图模式
+    mode: mapping
+
+    # ==========================================
+    # 2. 机器人坐标系与雷达话题
+    # ==========================================
+
+    # 里程计参考坐标系
+    odom_frame: odom
+
+    # SLAM 建立的地图坐标系
+    map_frame: map
+
+    # 小车在地面的参考坐标系
+    base_frame: base_footprint
+
+    # 雷达话题，与小车模型中的设置一致
+    scan_topic: /scan
+
+    # ==========================================
+    # 3. SLAM 优化求解器
+    # ==========================================
+
+    # 使用 Ceres 非线性优化求解器
+    solver_plugin: solver_plugins::CeresSolver
+
+    ceres_linear_solver: SPARSE_NORMAL_CHOLESKY
+    ceres_preconditioner: SCHUR_JACOBI
+    ceres_trust_strategy: LEVENBERG_MARQUARDT
+    ceres_dogleg_type: TRADITIONAL_DOGLEG
+    ceres_loss_function: None
+
+    # ==========================================
+    # 4. 地图分辨率与更新
+    # ==========================================
+
+    # 每个地图栅格对应 0.05 m
+    resolution: 0.05
+
+    # 地图发布更新的时间间隔，单位秒
+    map_update_interval: 3.0
+
+    # 定期发布 map 到 odom 的 TF 变换
+    transform_publish_period: 0.02
+
+    transform_timeout: 0.2
+    tf_buffer_duration: 30.0
+
+    # ==========================================
+    # 5. 激光雷达参数
+    # ==========================================
+
+    # 与实际雷达的最近测距一致
+    min_laser_range: 0.12
+
+    # 实际雷达上限是 8.0 m
+    # 略微保守地设置为 7.8 m
+    max_laser_range: 7.8
+
+    # 扫描缓冲区使用相同的最大距离
+    scan_buffer_maximum_scan_distance: 7.8
+
+    # 不主动跳过扫描消息
+    throttle_scans: 1
+
+    # 最短扫描处理时间间隔
+    # 雷达频率为 10 Hz，对应 0.1 秒
+    minimum_time_interval: 0.1
+
+    # ==========================================
+    # 6. 扫描匹配
+    # ==========================================
+
+    # 开启扫描匹配
+    use_scan_matching: true
+
+    # 使用扫描点的重心参与匹配
+    use_scan_barycenter: true
+
+    # 最小移动距离：10 cm
+    minimum_travel_distance: 0.10
+
+    # 最小转角：约 5.7 度
+    minimum_travel_heading: 0.10
+
+    # 扫描缓冲区大小
+    scan_buffer_size: 10
+
+    # 相邻扫描关联的最大距离
+    link_scan_maximum_distance: 1.5
+
+    # 扫描匹配响应门槛
+    link_match_minimum_response_fine: 0.1
+
+    # ==========================================
+    # 7. 回环检测与优化
+    # ==========================================
+
+    # 开启回环检测
+    do_loop_closing: true
+
+    # 回环候选搜索的最大距离
+    loop_search_maximum_distance: 3.0
+
+    # 回环匹配所需的最小连续扫描链长度
+    loop_match_minimum_chain_size: 10
+
+    # 回环候选匹配的允许方差与响应阈值
+    loop_match_maximum_variance_coarse: 3.0
+    loop_match_minimum_response_coarse: 0.35
+    loop_match_minimum_response_fine: 0.45
+
+    # ==========================================
+    # 8. 扫描相关性搜索参数
+    # ==========================================
+
+    # 局部扫描匹配的搜索空间
+    correlation_search_space_dimension: 0.5
+    correlation_search_space_resolution: 0.01
+    correlation_search_space_smear_deviation: 0.1
+
+    # 回环匹配的搜索空间
+    loop_search_space_dimension: 8.0
+    loop_search_space_resolution: 0.05
+    loop_search_space_smear_deviation: 0.03
+
+    # ==========================================
+    # 9. 其他运行参数
+    # ==========================================
+
+    # 保留扫描以构建占据栅格地图
+    min_pass_through: 2
+    occupancy_threshold: 0.1
+
+    # 支持地图保存
+    use_map_saver: true
+
+    # 不开启额外调试日志
+    debug_logging: false
+
+    # 关闭交互式编辑模式
+    enable_interactive_mode: false
+
+    # 为地图序列化保留足够的栈空间
+    stack_size_to_use: 40000000
