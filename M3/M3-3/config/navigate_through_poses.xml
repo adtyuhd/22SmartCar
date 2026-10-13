@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!--
+  M3-3 阿克曼小车多目标导航行为树
+
+  用于 NavigateThroughPoses。
+  与单目标导航使用相同的 Smac Hybrid-A* 和 MPPI。
+
+  设计：
+  - 不使用 Spin 原地旋转
+  - 不使用 BackUp 倒车恢复
+  - 定期重新规划
+  - 规划或控制失败时可清理代价地图
+  - 不使用 RemovePassedGoals，避免额外插件依赖
+-->
+
+<root main_tree_to_execute="MainTree">
+
+  <BehaviorTree ID="MainTree">
+
+    <RecoveryNode
+      number_of_retries="2"
+      name="NavigateRecovery">
+
+      <PipelineSequence name="NavigateWithReplanning">
+
+        <RateController hz="1.0">
+
+          <RecoveryNode
+            number_of_retries="1"
+            name="ComputePathRecovery">
+
+            <ComputePathThroughPoses
+              goals="{goals}"
+              path="{path}"
+              planner_id="GridBased"/>
+
+            <ClearEntireCostmap
+              name="ClearGlobalCostmap"
+              service_name="global_costmap/clear_entirely_global_costmap"/>
+
+          </RecoveryNode>
+
+        </RateController>
+
+        <RecoveryNode
+          number_of_retries="1"
+          name="FollowPathRecovery">
+
+          <FollowPath
+            path="{path}"
+            controller_id="FollowPath"/>
+
+          <ClearEntireCostmap
+            name="ClearLocalCostmap"
+            service_name="local_costmap/clear_entirely_local_costmap"/>
+
+        </RecoveryNode>
+
+      </PipelineSequence>
+
+      <Wait wait_duration="2.0"/>
+
+    </RecoveryNode>
+
+  </BehaviorTree>
+
+</root>

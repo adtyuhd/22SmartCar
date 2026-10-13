@@ -31,6 +31,7 @@ def generate_launch_description():
     nav2_params = package_share / "config" / "nav2_params.yaml"
     amcl_params = package_share / "config" / "amcl_params.yaml"
     behavior_tree = package_share / "config" / "navigate_to_pose.xml"
+    through_poses_tree = package_share / "config" / "navigate_through_poses.xml"
     rviz_config = package_share / "config" / "navigation.rviz"
 
     for path in (
@@ -39,6 +40,7 @@ def generate_launch_description():
         nav2_params,
         amcl_params,
         behavior_tree,
+        through_poses_tree,
         rviz_config,
     ):
         if not path.is_file():
@@ -120,7 +122,10 @@ def generate_launch_description():
         name="bt_navigator", output="screen",
         parameters=[
             configured_nav2_params,
-            {"default_nav_to_pose_bt_xml": str(behavior_tree)},
+            {
+                "default_nav_to_pose_bt_xml": str(behavior_tree),
+                "default_nav_through_poses_bt_xml": str(through_poses_tree),
+            },
         ],
     )
     velocity_smoother = Node(
