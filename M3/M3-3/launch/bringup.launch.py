@@ -17,6 +17,7 @@ M3-3 一键自主导航启动文件
 不使用 Gazebo 真值作为定位输入。
 """
 
+import os
 from pathlib import Path
 
 from ament_index_python.packages import (
@@ -47,12 +48,10 @@ def generate_launch_description():
     # 1. 找到 M3-1、M3-2、M3-3 的实际文件
     # ==================================================
 
-    # resolve() 跟随 --symlink-install 创建的符号链接
-    # 从源码 launch 文件向上两级得到 M3 目录
     launch_file = Path(__file__).resolve()
     m3_dir = launch_file.parents[2]
 
-    # M3-2 已经完成的仿真启动文件
+    # 复用 M3-2 的仿真启动文件
     sim_launch = (
         m3_dir
         / "M3-2"
@@ -60,7 +59,7 @@ def generate_launch_description():
         / "sim_m3_2.launch.py"
     )
 
-    # 只使用 M3-2 已经建立好的地图
+    # 只能使用 M3-2 的地图
     default_map = (
         m3_dir
         / "M3-2"
@@ -68,7 +67,7 @@ def generate_launch_description():
         / "map.yaml"
     )
 
-    # M3-3 已安装的 ROS 2 功能包目录
+    # 获取 M3-3 已安装功能包的位置
     package_share = Path(
         get_package_share_directory("m3_3_navigation")
     )
@@ -91,7 +90,7 @@ def generate_launch_description():
         / "navigate_to_pose.xml"
     )
 
-    # 预先检查必需文件，避免路径错误时启动半套系统
+    # 检查启动所需的文件
     required_files = [
         sim_launch,
         default_map,
@@ -107,7 +106,7 @@ def generate_launch_description():
             )
 
     # ==================================================
-    # 2. 声明命令行启动参数
+    # 2. 声明启动参数
     # ==================================================
 
     map_arg = DeclareLaunchArgument(
@@ -132,7 +131,6 @@ def generate_launch_description():
     use_sim_time = LaunchConfiguration("use_sim_time")
     use_rviz = LaunchConfiguration("rviz")
 
-    # 将 launch 的字符串 true/false 转成 ROS bool 参数
     sim_time_bool = ParameterValue(
         use_sim_time,
         value_type=bool,
@@ -142,8 +140,6 @@ def generate_launch_description():
     # 3. 配置 Nav2 参数文件
     # ==================================================
 
-    # 保留原始 YAML，不修改磁盘上的 nav2_params.yaml
-    # 启动时统一替换其中的 use_sim_time
     configured_nav2_params = ParameterFile(
         RewrittenYaml(
             source_file=str(nav2_params),
@@ -166,7 +162,7 @@ def generate_launch_description():
     )
 
     # ==================================================
-    # 5. 地图服务器
+    # 5. Map Server 地图服务器
     # ==================================================
 
     map_server = Node(
@@ -201,7 +197,7 @@ def generate_launch_description():
     )
 
     # ==================================================
-    # 7. Nav2 全局规划器与局部控制器
+    # 7. Nav2 全局规划器
     # ==================================================
 
     planner_server = Node(
@@ -212,6 +208,10 @@ def generate_launch_description():
         parameters=[configured_nav2_params],
     )
 
+    # ==================================================
+    # 8. Nav2 局部控制器
+    # ==================================================
+
     controller_server = Node(
         package="nav2_controller",
         executable="controller_server",
@@ -219,14 +219,14 @@ def generate_launch_description():
         output="screen",
         parameters=[configured_nav2_params],
 
-        # MPPI 输出到速度平滑器，而非直接驱动车轮
+        # MPPI 的输出先送给速度平滑器
         remappings=[
             ("cmd_vel", "cmd_vel_nav"),
         ],
     )
 
     # ==================================================
-    # 8. 路径平滑与恢复行为
+    # 9. 路径平滑服务
     # ==================================================
 
     smoother_server = Node(
@@ -237,6 +237,10 @@ def generate_launch_description():
         parameters=[configured_nav2_params],
     )
 
+    # ==================================================
+    # 10. 恢复行为服务
+    # ==================================================
+
     behavior_server = Node(
         package="nav2_behaviors",
         executable="behavior_server",
@@ -246,7 +250,7 @@ def generate_launch_description():
     )
 
     # ==================================================
-    # 9. 行为树导航器
+    # 11. 行为树导航器
     # ==================================================
 
     bt_navigator = Node(
@@ -256,10 +260,9 @@ def generate_launch_description():
         output="screen",
         parameters=[
             configured_nav2_params,
-
-            # 明确加载 M3-3 的阿克曼行为树
-            # 避免使用含 Spin / BackUp 的默认行为树
             {
+                # 使用自己的阿克曼行为树
+                # 避免默认的 Spin / BackUp 恢复行为
                 "default_nav_to_pose_bt_xml":
                     str(behavior_tree),
             },
@@ -267,7 +270,7 @@ def generate_launch_description():
     )
 
     # ==================================================
-    # 10. 速度平滑器
+    # 12. 速度平滑器
     # ==================================================
 
     velocity_smoother = Node(
@@ -278,16 +281,16 @@ def generate_launch_description():
         parameters=[configured_nav2_params],
 
         remappings=[
-            # 接收 MPPI 的原始速度
+            # 接收 MPPI 的速度指令
             ("cmd_vel", "cmd_vel_nav"),
 
-            # 平滑后送到 M3-1 阿克曼控制器
+            # 输出到 M3-1 阿克曼控制器的 cmd_vel
             ("cmd_vel_smoothed", "cmd_vel"),
         ],
     )
 
     # ==================================================
-    # 11. 路点跟随器
+    # 13. 路点跟随器
     # ==================================================
 
     waypoint_follower = Node(
@@ -299,7 +302,7 @@ def generate_launch_description():
     )
 
     # ==================================================
-    # 12. 生命周期管理器
+    # 14. 生命周期管理器
     # ==================================================
 
     lifecycle_nodes = [
@@ -329,7 +332,27 @@ def generate_launch_description():
     )
 
     # ==================================================
-    # 13. RViz2 可视化
+    # 15. 修复 RViz 的 Snap 图形环境冲突
+    # ==================================================
+
+    # os.environ 是当前进程的环境变量集合。
+    # copy() 创建独立副本，不修改原来的启动环境。
+    rviz_environment = os.environ.copy()
+
+    # 从 RViz 的专用环境中排除已验证的冲突变量。
+    # pop(..., None) 表示变量不存在时也不会报错。
+    snap_graphics_variables = [
+        "GTK_PATH",
+        "GTK_EXE_PREFIX",
+        "GIO_EXTRA_MODULES",
+        "GIO_MODULE_DIR",
+    ]
+
+    for variable in snap_graphics_variables:
+        rviz_environment.pop(variable, None)
+
+    # ==================================================
+    # 16. RViz2 可视化
     # ==================================================
 
     rviz = Node(
@@ -337,16 +360,23 @@ def generate_launch_description():
         executable="rviz2",
         name="rviz2",
         output="screen",
+
         condition=IfCondition(use_rviz),
+
         parameters=[
             {
                 "use_sim_time": sim_time_bool,
             },
         ],
+
+        # 关键修复：
+        # 仅 RViz 使用过滤后的环境变量。
+        # Gazebo、AMCL、Nav2 保持原来的运行环境。
+        env=rviz_environment,
     )
 
     # ==================================================
-    # 14. 返回完整启动描述
+    # 17. 组合完整的一键启动流程
     # ==================================================
 
     return LaunchDescription([
