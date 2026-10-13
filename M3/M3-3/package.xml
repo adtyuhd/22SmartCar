@@ -1,0 +1,58 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd"
+            schematypens="http://www.w3.org/2001/XMLSchema"?>
+
+<package format="3">
+  <name>m3_3_navigation</name>
+  <version>0.0.1</version>
+
+  <description>
+    M3-3 Ackermann autonomous navigation using
+    the M3-1 smart car and M3-2 SLAM map.
+  </description>
+
+  <!-- 使用符合 ROS 2 格式要求的示例邮箱 -->
+  <maintainer email="student@example.com">Student</maintainer>
+
+  <license>Apache-2.0</license>
+
+  <!-- 构建系统 -->
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <!-- ROS 2 启动系统 -->
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+
+  <!-- 复用 M3-1 已完成的阿克曼小车 -->
+  <exec_depend>smart_car_description</exec_depend>
+  <exec_depend>xacro</exec_depend>
+  <exec_depend>gazebo_ros</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>controller_manager</exec_depend>
+
+  <!-- 地图与定位 -->
+  <exec_depend>nav2_amcl</exec_depend>
+  <exec_depend>nav2_map_server</exec_depend>
+
+  <!-- Nav2 全局规划与局部控制 -->
+  <exec_depend>nav2_planner</exec_depend>
+  <exec_depend>nav2_controller</exec_depend>
+  <exec_depend>nav2_bt_navigator</exec_depend>
+  <exec_depend>nav2_lifecycle_manager</exec_depend>
+  <exec_depend>nav2_costmap_2d</exec_depend>
+  <exec_depend>nav2_smac_planner</exec_depend>
+  <exec_depend>nav2_mppi_controller</exec_depend>
+
+  <!-- Nav2 其他模块 -->
+  <exec_depend>nav2_behaviors</exec_depend>
+  <exec_depend>nav2_smoother</exec_depend>
+  <exec_depend>nav2_velocity_smoother</exec_depend>
+
+  <!-- RViz 可视化 -->
+  <exec_depend>rviz2</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
