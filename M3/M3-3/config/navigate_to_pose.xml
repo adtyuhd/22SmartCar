@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!--
+  M3-3 阿克曼小车导航行为树
+
+  设计原则：
+  1. 使用 Smac Hybrid-A* 规划路径
+  2. 使用 MPPI 跟随路径
+  3. 定期重新规划
+  4. 允许清理代价地图后重试
+  5. 不使用 Spin（原地旋转）
+  6. 不使用 BackUp（倒车恢复）
+
+  注意：
+  不执行 Spin / BackUp，并不意味着所有目标都能到达。
+  如果前进方向不可行，应允许导航报告失败。
+-->
+
+<root main_tree_to_execute="MainTree">
+
+  <BehaviorTree ID="MainTree">
+
+    <!-- 整体导航失败后，最多尝试恢复两次 -->
+    <RecoveryNode
+      number_of_retries="2"
+      name="NavigateRecovery">
+
+      <!-- 规划与路径跟随组成流水线 -->
+      <PipelineSequence name="NavigateWithReplanning">
+
+        <!-- 每秒最多触发一次路径重新规划 -->
+        <RateController hz="1.0">
+
+          <!-- 规划失败后可清理全局代价地图 -->
+          <RecoveryNode
+            number_of_retries="1"
+            name="ComputePathRecovery">
+
+            <ComputePathToPose
+              goal="{goal}"
+              path="{path}"
+              planner_id="GridBased"/>
+
+            <ClearEntireCostmap
+              name="ClearGlobalCostmap"
+              service_name="global_costmap/clear_entirely_global_costmap"/>
+
+          </RecoveryNode>
+
+        </RateController>
+
+        <!-- 跟随规划出的路径 -->
+        <RecoveryNode
+          number_of_retries="1"
+          name="FollowPathRecovery">
+
+          <FollowPath
+            path="{path}"
+            controller_id="FollowPath"/>
+
+          <ClearEntireCostmap
+            name="ClearLocalCostmap"
+            service_name="local_costmap/clear_entirely_local_costmap"/>
+
+        </RecoveryNode>
+
+      </PipelineSequence>
+
+      <!-- 整体导航失败后，等待两秒再重试 -->
+      <Wait wait_duration="2.0"/>
+
+    </RecoveryNode>
+
+  </BehaviorTree>
+
+</root>
