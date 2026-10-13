@@ -1,0 +1,75 @@
+amcl:
+  ros__parameters:
+
+    # 所有定位计算使用 Gazebo 仿真时间
+    use_sim_time: true
+
+    # ===== 1. TF 坐标系 =====
+
+    # 地图坐标系，由地图服务器提供地图数据
+    global_frame_id: "map"
+
+    # 里程计坐标系
+    odom_frame_id: "odom"
+
+    # 小车在地面上的投影坐标系
+    # 与 M3-1 阿克曼控制器配置保持一致
+    base_frame_id: "base_footprint"
+
+    # AMCL 负责发布 map -> odom 变换
+    tf_broadcast: true
+
+    # ===== 2. 里程计运动模型 =====
+
+    # AMCL 使用平面里程计运动模型
+    # DifferentialMotionModel 是 AMCL 的定位预测模型，
+    # 不代表将阿克曼车辆改成差速驱动
+    robot_model_type: "nav2_amcl::DifferentialMotionModel"
+
+    # 以下四项描述里程计预测的不确定性
+    # 先采用常用基线值，后续根据定位表现判断是否需要修改
+    alpha1: 0.2
+    alpha2: 0.2
+    alpha3: 0.2
+    alpha4: 0.2
+
+    # ===== 3. 激光雷达模型 =====
+
+    # 与 M3-1 提供的雷达实际量程一致
+    laser_min_range: 0.12
+    laser_max_range: 8.0
+
+    # 使用似然场模型比较激光与地图障碍物
+    laser_model_type: "likelihood_field"
+
+    # 每次定位更新最多选择 60 条激光束
+    # 原雷达是 360 线，减少计算量
+    max_beams: 60
+
+    # 激光束与地图障碍之间的最大匹配距离
+    laser_likelihood_max_dist: 2.0
+
+    # ===== 4. 粒子数量 =====
+
+    # 粒子太少可能定位不稳定，太多增加计算负担
+    min_particles: 500
+    max_particles: 2000
+
+    # ===== 5. 定位更新条件 =====
+
+    # 机器人累计移动至少 0.10 m 时允许更新
+    update_min_d: 0.10
+
+    # 机器人累计旋转至少 0.10 rad 时允许更新
+    update_min_a: 0.10
+
+    # ===== 6. TF 时间容差 =====
+
+    # 为定位输出的 TF 提供时间容差
+    transform_tolerance: 1.0
+
+    # ===== 7. 初始位姿 =====
+
+    # 暂不假设 Gazebo 与地图的坐标完全重合
+    # 之后通过 RViz 设置并验证初始位置
+    set_initial_pose: false
