@@ -111,8 +111,8 @@ controller_server:
       plugin: "nav2_controller::SimpleGoalChecker"
       stateful: true
 
-      # 位置允许误差 0.30m
-      xy_goal_tolerance: 0.30
+      # 位置允许误差 0.10m：避免距离目标仍有约 0.3m 时提前成功
+      xy_goal_tolerance: 0.10
 
       # 朝向允许误差约 20°
       # 阿克曼车不能原地旋转修正最终朝向
@@ -212,12 +212,17 @@ controller_server:
         enabled: true
         cost_weight: 10.0
         cost_power: 1
-        offset_from_furthest: 20
+        # 短路径 (0.8m ≈ 12 点) 必须能激活路径对齐评分
+        offset_from_furthest: 4
+        # 离目标 0.25m 内交给目标评分；此前默认 0.5m
+        threshold_to_consider: 0.25
 
       PathFollowCritic:
         enabled: true
         cost_weight: 5.0
         cost_power: 1
+        # 原默认 1.4m 导致整条 0.8m 路径都不参与跟随评分
+        threshold_to_consider: 0.25
 
       PathAngleCritic:
         enabled: true
@@ -293,8 +298,10 @@ local_costmap:
     ros__parameters:
       use_sim_time: true
 
-      # 局部地图跟随里程计坐标变化
-      global_frame: odom
+      # 使用 map 作为局部代价地图参考系，避免 Humble 控制器
+      # 在目标到达判断中将 map 目标转换到 odom 失败时误判成功。
+      # 前提是 AMCL 持续提供有效的 map -> odom 动态 TF。
+      global_frame: map
       robot_base_frame: base_footprint
 
       # 以小车为中心实时移动局部地图
@@ -313,7 +320,12 @@ local_costmap:
       update_frequency: 5.0
       publish_frequency: 2.0
 
-      plugins: ["obstacle_layer", "inflation_layer"]
+      # 包含静态地图，避免仅依赖局部雷达而漏掉地图上的墙体。
+      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_subscribe_transient_local: true
 
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
