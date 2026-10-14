@@ -2,7 +2,7 @@
 #!/usr/bin/env python3
 """M3-3: one-command Gazebo + localization + Nav2 + saved RViz view.
 
-Reuses M3-1 smart_car_description and M3-2 scene/map.
+Reuses M3-1 robot geometry and M3-2 scene/map without modifying either.
 Does not use /gazebo/model_states as a localization input.
 """
 
@@ -24,10 +24,11 @@ from nav2_common.launch import RewrittenYaml
 def generate_launch_description():
     # -- Locate existing project assets (do not modify M3-1 or M3-2) --
     m3_dir = Path(__file__).resolve().parents[2]
-    sim_launch = m3_dir / "M3-2" / "launch" / "sim_m3_2.launch.py"
+
     default_map = m3_dir / "M3-2" / "maps" / "map.yaml"
 
     package_share = Path(get_package_share_directory("m3_3_navigation"))
+    sim_launch = package_share / "launch" / "sim_m3_3.launch.py"
     nav2_params = package_share / "config" / "nav2_params.yaml"
     amcl_params = package_share / "config" / "amcl_params.yaml"
     behavior_tree = package_share / "config" / "navigate_to_pose.xml"
@@ -75,7 +76,7 @@ def generate_launch_description():
         allow_substs=True,
     )
 
-    # -- Gazebo: directly reuse the existing M3-2 simulator launch --
+    # -- Gazebo: original M3-2 world/M3-1 geometry, corrected wheel order --
     gazebo_simulation = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(str(sim_launch))
     )
