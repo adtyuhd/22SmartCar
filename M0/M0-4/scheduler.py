@@ -374,8 +374,12 @@ def run_task(
             f"attempt {attempt}"
         )
 
-        # 模拟任务执行
-        time.sleep(duration)
+        # 模拟任务执行，最多等待剩余的全局超时时间
+        if timeout is None:
+            time.sleep(duration)
+        else:
+            remaining = timeout - elapsed_since(program_start)
+            time.sleep(min(duration, max(0, remaining)))
 
         # 每次尝试结束时更新时间
         ended_at = time.time()
@@ -425,7 +429,7 @@ def run_task(
 
     # 三次都失败
     return (
-        "SKIPPED",
+        "FAILED",
         max_attempts,
         started_at,
         ended_at,

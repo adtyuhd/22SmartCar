@@ -244,7 +244,7 @@ duration >= 0
 time.sleep(duration)
 ```
 
-模拟真实任务运行。
+模拟真实任务运行；当设置全局超时时，实际休眠时间会限制为任务时长与剩余超时时间中的较小值。
 
 ---
 
@@ -346,7 +346,7 @@ Error: dependency cycle detected
 失败 -> RETRY
 
 第三次执行
-失败 -> 最终 SKIPPED
+失败 -> 最终 FAILED
 ```
 
 如果任意一次成功，则任务最终状态为：
@@ -359,10 +359,10 @@ SUCCESS
 
 ## 9. 依赖失败传播
 
-如果一个任务最终失败并成为：
+如果一个任务执行 3 次仍然失败，其最终状态为：
 
 ```text
-SKIPPED
+FAILED
 ```
 
 所有依赖它的下游任务也会：
@@ -384,7 +384,7 @@ Start
 如果：
 
 ```text
-BadTask = SKIPPED
+BadTask = FAILED
 ```
 
 那么：
@@ -412,6 +412,8 @@ Independent
 * 每个任务开始之前
 * 每次任务尝试开始之前
 * `time.sleep()` 执行之后
+
+每次尝试最多休眠到全局 timeout 的剩余时间，不会为超过超时限制的任务等待完整 `duration`。
 
 如果总时间超过 timeout：
 
@@ -505,7 +507,7 @@ SKIPPED
 TIMEOUT
 ```
 
-其中 `FAILED` 主要用于运行过程中的失败尝试输出；任务连续失败 3 次后，最终状态记录为 `SKIPPED`。
+`FAILED` 表示任务尝试 3 次仍未成功；`SKIPPED` 表示由于前置任务失败而没有运行。
 
 ---
 
@@ -566,7 +568,7 @@ python3 scheduler.py \
 
 ```bash
 python3 scheduler.py \
-  --config test_timeout.yaml \
+  --config tasks_demo.yaml \
   --timeout 0.2 \
   --report timeout_report.json \
   --seed 42
