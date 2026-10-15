@@ -17,108 +17,132 @@ sensor_analyzer.py  —— 上一届学长留下的"能用"的脚本
 """
 
 import csv
-import os
 import math
 import argparse
 import sys
 
 DEFAULT_INPUT = "sensor_data.csv"
 DEFAULT_OUTPUT = "cleaned_data.csv"
-# --- 路径处理 ---
-parser = argparse.ArgumentParser(
-    description="Analyze and clean sensor data"
-)
 
-parser.add_argument(
-    "--input",
-    default=DEFAULT_INPUT,
-    help="input CSV file"
-)
-
-parser.add_argument(
-    "--output",
-    default=DEFAULT_OUTPUT,
-    help="output CSV file"
-)
-
-args = parser.parse_args()
-
-input_path = args.input
-output_path = args.output
-
-data = []
-times = []
-cleaned = []
-
-print("=== 传感器数据分析 ===")
 
 # --- 读取数据 ---
-try:
-    f = open(input_path, "r")
-except FileNotFoundError:
-    print("Error: 输入文件不存在:", input_path)
-    sys.exit(1)
+def read_data(input_path):
+    times = []
+    data = []
 
-reader = csv.DictReader(f)
-
-# 空文件：连表头都没有
-if reader.fieldnames is None:
-    print("Error: 输入文件为空")
-    f.close()
-    sys.exit(1)
-
-# 检查列名
-if "time" not in reader.fieldnames or "value" not in reader.fieldnames:
-    print("Error: CSV 必须包含 time 和 value 两列")
-    f.close()
-    sys.exit(1)
-
-for line_number, row in enumerate(reader, start=2):
     try:
-        t = float(row["time"])
-        v = float(row["value"])
-    except (ValueError, TypeError):
-        print("Error: 第 %d 行包含非数值内容" % line_number)
-        f.close()
-        sys.exit(1)
+        f = open(input_path, "r", newline="", encoding="utf-8")
+    except FileNotFoundError:
+        raise FileNotFoundError("输入文件不存在: " + input_path) from None
 
-    times.append(t)
-    data.append(v)
+    with f:
+        reader = csv.DictReader(f)
 
-f.close()
+        if reader.fieldnames is None:
+            raise ValueError("输入文件为空")
 
-# 有表头，但没有任何数据行
-if len(data) == 0:
-    print("Error: CSV 没有数据")
-    sys.exit(1)
+        if "time" not in reader.fieldnames or "value" not in reader.fieldnames:
+            raise ValueError("CSV 必须包含 time 和 value 两列")
 
-print("共读取 %d 条数据" % len(data))
+        for line_number, row in enumerate(reader, start=2):
+            try:
+                t = float(row["time"])
+                v = float(row["value"])
+            except (ValueError, TypeError):
+                raise ValueError("第 %d 行包含非数值内容" % line_number) from None
 
-# --- 计算平均值 ---
-total = 0
-for v in data:
-    total += v
-mean = total / len(data)
+            times.append(t)
+            data.append(v)
 
-# --- 计算标准差 ---
-acc = 0
-for v in data:
-    acc += (v - mean)*(v - mean)
-std = math.sqrt(acc / len(data))
+    if len(data) == 0:
+        raise ValueError("CSV 没有数据")
+
+    return times, data
+
+
+# --- 计算均值和标准差 ---
+def calculate_stats(data):
+    total = 0
+    for v in data:
+        total += v
+    mean = total / len(data)
+
+    acc = 0
+    for v in data:
+        acc += (v - mean) * (v - mean)
+    std = math.sqrt(acc / len(data))
+
+    return mean, std
+
 
 # --- 剔除离群值 ---
-for t, v in zip(times, data):
-    if abs(v - mean) <= 2 * std:
-        cleaned.append((t, v))
+def remove_outliers(times, data, mean, std):
+    cleaned = []
 
-# --- 输出清洗后的数据 ---
-f = open(output_path, "w", newline="")
-writer = csv.writer(f)
-writer.writerow(["time", "value"])
-for t,v in cleaned:
-    writer.writerow([t,v])
-f.close()
-print("均值 mean = %.4f" % mean)
-print("标准差 std = %.4f" % std)
-print("清洗后剩余 %d 条" % len(cleaned))
-print("已保存到 %s" % output_path)
+    for t, v in zip(times, data):
+        if abs(v - mean) <= 2 * std:
+            cleaned.append((t, v))
+
+    return cleaned
+
+
+# --- 保存清洗后的数据 ---
+def save_data(output_path, cleaned):
+    with open(output_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["time", "value"])
+
+        for t, v in cleaned:
+            writer.writerow([t, v])
+
+
+# --- 主函数 ---
+def main():
+    parser = argparse.ArgumentParser(
+        description="Analyze and clean sensor data"
+    )
+
+    parser.add_argument(
+        "--input",
+        default=DEFAULT_INPUT,
+        help="input CSV file"
+    )
+
+    parser.add_argument(
+        "--output",
+        default=DEFAULT_OUTPUT,
+        help="output CSV file"
+    )
+
+    args = parser.parse_args()
+
+    try:
+        # 读取数据
+        times, data = read_data(args.input)
+
+        # 计算统计量
+        mean, std = calculate_stats(data)
+
+        # 剔除离群值
+        cleaned = remove_outliers(times, data, mean, std)
+
+        # 保存数据
+        save_data(args.output, cleaned)
+
+    except (OSError, ValueError, csv.Error) as e:
+        print("Error:", e)
+        return 1
+
+    # 统一打印统计摘要
+    print("=== 传感器数据分析 ===")
+    print("共读取 %d 条数据" % len(data))
+    print("均值 mean = %.4f" % mean)
+    print("标准差 std = %.4f" % std)
+    print("清洗后剩余 %d 条" % len(cleaned))
+    print("已保存到 %s" % args.output)
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
