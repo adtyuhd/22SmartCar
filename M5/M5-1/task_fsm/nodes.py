@@ -19,6 +19,8 @@ class TaskNode:
 
     def teardown(self):
         pass
+    def reset_cancel(self):
+        self._cancelled = False 
 
 
 class SpeakTTS(TaskNode):
