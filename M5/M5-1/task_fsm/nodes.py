@@ -155,16 +155,20 @@ class ExecuteGrasp(TaskNode):
             return "SKIPPED"
 
         pose = self.params.get("grasp_pose")
+
         if pose is None:
             pose = self.ctx.data.get("grasp_pose")
 
         grasp_type = self.params.get("grasp_type")
-        client = self.ctx.clients.get("grasp")
+        client = self.params.get("client")
 
         if pose is None or not grasp_type or client is None:
             return "FAILED"
 
-        result = client(pose, grasp_type)
+        try:
+            result = client(pose, grasp_type)
+        except Exception:
+            return "FAILED"
 
         if self._cancelled:
             return "SKIPPED"
