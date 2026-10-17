@@ -274,3 +274,71 @@ def test_fallback_cycle_terminates():
         step["status"] == "FAILED"
         for step in scheduler.step_records
     )
+
+def test_scheduler_node_lifecycle_runs_for_each_attempt():
+    class LifecycleRetryNode(RetryNode):
+        def __init__(self, name, params=None):
+            super().__init__(name, params)
+            self.setup_count = 0
+            self.teardown_count = 0
+
+        def setup(self):
+            self.setup_count += 1
+
+        def teardown(self):
+            self.teardown_count += 1
+
+    node = LifecycleRetryNode("lifecycle", {"retry": 1})
+    scheduler = TaskScheduler([node], TaskContext("lifecycle_test"))
+
+    assert scheduler.run() == "SUCCESS"
+    assert node.count == 2
+    assert node.setup_count == 2
+    assert node.teardown_count == 2
+
+
+def test_scheduler_teardown_runs_when_execute_raises():
+    class RaisingNode(SuccessNode):
+        def __init__(self, name, params=None):
+            super().__init__(name, params)
+            self.setup_count = 0
+            self.teardown_count = 0
+
+        def setup(self):
+            self.setup_count += 1
+
+        def execute(self):
+            raise RuntimeError("mock execution error")
+
+        def teardown(self):
+            self.teardown_count += 1
+
+    node = RaisingNode("raising", {"on_fail": "skip"})
+    scheduler = TaskScheduler([node], TaskContext("lifecycle_error_test"))
+
+    assert scheduler.run() == "SUCCESS"
+    assert node.setup_count == 1
+    assert node.teardown_count == 1
+    assert scheduler.step_records[0]["status"] == "SKIPPED"
+
+
+def test_parallel_branch_lifecycle():
+    class LifecycleNode(SuccessNode):
+        def __init__(self, name):
+            super().__init__(name)
+            self.setup_count = 0
+            self.teardown_count = 0
+
+        def setup(self):
+            self.setup_count += 1
+
+        def teardown(self):
+            self.teardown_count += 1
+
+    first = LifecycleNode("first")
+    second = LifecycleNode("second")
+    parallel = ParallelExecutor("parallel_lifecycle", [first, second])
+
+    assert parallel.execute() == "SUCCESS"
+    assert first.setup_count == first.teardown_count == 1
+    assert second.setup_count == second.teardown_count == 1

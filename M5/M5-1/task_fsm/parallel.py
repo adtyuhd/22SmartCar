@@ -9,46 +9,60 @@ class ParallelExecutor:
         self.params = {}
         self._cancelled = False
 
+    @staticmethod
+    def _execute_branch(branch):
+        setup = getattr(branch, "setup", None)
+        teardown = getattr(branch, "teardown", None)
+        setup_done = False
+        try:
+            if setup is not None:
+                setup()
+            setup_done = True
+            return branch.execute()
+        except Exception:
+            return "FAILED"
+        finally:
+            if setup_done and teardown is not None:
+                try:
+                    teardown()
+                except Exception:
+                    pass
+
     def execute(self):
         if self._cancelled:
             return "SKIPPED"
 
         with ThreadPoolExecutor(max_workers=len(self.branches)) as executor:
             futures = {
-                executor.submit(branch.execute): index
+                executor.submit(self._execute_branch, branch): index
                 for index, branch in enumerate(self.branches)
             }
-
             results = [None] * len(self.branches)
 
             for future in as_completed(futures):
                 index = futures[future]
-                result = future.result()
+                try:
+                    result = future.result()
+                except Exception:
+                    result = "FAILED"
                 results[index] = result
 
-                if (
-                    result == "FAILED"
-                    and self.fail_policy == "any_fail"
-                ):
+                if result == "FAILED" and self.fail_policy == "any_fail":
                     for i, branch in enumerate(self.branches):
                         if i != index:
                             branch.cancel()
-
                     return "FAILED"
 
             if all(result == "SUCCESS" for result in results):
                 return "SUCCESS"
-
             return "FAILED"
 
     def cancel(self):
         self._cancelled = True
-
         for branch in self.branches:
             branch.cancel()
 
     def reset_cancel(self):
         self._cancelled = False
-
         for branch in self.branches:
             branch.reset_cancel()
