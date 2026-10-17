@@ -114,19 +114,33 @@ def main():
 
         start_time = time.monotonic()
 
-        result = scheduler.run()
-
-        total_elapsed = time.monotonic() - start_time
-
-        report = {
-            "task_id": task_id,
-            "result": result,
-            "total_elapsed_s": round(total_elapsed, 3),
-            "steps": scheduler.step_records,
-            "final_context": ctx.data
-        }
-
-        save_report(report)
+        try:
+            result = scheduler.run()
+        except KeyboardInterrupt:
+            result = "ABORTED"
+            for node in nodes:
+                try:
+                    node.cancel()
+                except Exception:
+                    pass
+            print("Task interrupted", file=sys.stderr)
+        except Exception as e:
+            result = "FAILED"
+            for node in nodes:
+                try:
+                    node.cancel()
+                except Exception:
+                    pass
+            print(f"Task execution error: {type(e).__name__}: {e}", file=sys.stderr)
+        finally:
+            report = {
+                "task_id": task_id,
+                "result": result,
+                "total_elapsed_s": round(time.monotonic() - start_time, 3),
+                "steps": scheduler.step_records,
+                "final_context": ctx.data
+            }
+            save_report(report)
 
         log(f"Task {task_id}: {result}", result)
 

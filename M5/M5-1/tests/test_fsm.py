@@ -342,3 +342,87 @@ def test_parallel_branch_lifecycle():
     assert parallel.execute() == "SUCCESS"
     assert first.setup_count == first.teardown_count == 1
     assert second.setup_count == second.teardown_count == 1
+
+
+def test_runner_writes_failed_report(monkeypatch, tmp_path):
+    import json
+    import run_task
+
+    yaml_path = tmp_path / "task.yaml"
+    yaml_path.write_text(
+        "tasks:\n  - name: speak\n    type: SpeakTTS\n    text: hello\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(run_task.sys, "argv", ["run_task.py", str(yaml_path)])
+
+    assert run_task.main() == 1
+    report = json.loads((tmp_path / "task_report.json").read_text(encoding="utf-8"))
+    assert report["result"] == "FAILED"
+    assert report["steps"][0]["name"] == "speak"
+    assert report["steps"][0]["status"] == "FAILED"
+
+
+def test_runner_writes_report_on_unexpected_error(monkeypatch, tmp_path):
+    import json
+    import run_task
+
+    yaml_path = tmp_path / "task.yaml"
+    yaml_path.write_text("tasks:\n  - name: speak\n    type: SpeakTTS\n    text: hello\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(run_task.sys, "argv", ["run_task.py", str(yaml_path)])
+    nodes = []
+
+    def crash(self):
+        nodes.extend(self.nodes)
+        self.ctx.data["progress"] = "started"
+        raise RuntimeError("unexpected failure")
+
+    monkeypatch.setattr(run_task.TaskScheduler, "run", crash)
+
+    assert run_task.main() == 1
+    report = json.loads((tmp_path / "task_report.json").read_text(encoding="utf-8"))
+    assert report["result"] == "FAILED"
+    assert report["final_context"] == {"progress": "started"}
+    assert all(node._cancelled for node in nodes)
+
+
+def test_runner_writes_report_on_keyboard_interrupt(monkeypatch, tmp_path):
+    import json
+    import run_task
+
+    yaml_path = tmp_path / "task.yaml"
+    yaml_path.write_text("tasks:\n  - name: speak\n    type: SpeakTTS\n    text: hello\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(run_task.sys, "argv", ["run_task.py", str(yaml_path)])
+    nodes = []
+
+    def interrupt(self):
+        nodes.extend(self.nodes)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(run_task.TaskScheduler, "run", interrupt)
+
+    assert run_task.main() == 1
+    report = json.loads((tmp_path / "task_report.json").read_text(encoding="utf-8"))
+    assert report["result"] == "ABORTED"
+    assert report["steps"] == []
+    assert all(node._cancelled for node in nodes)
+
+
+def test_runner_writes_timeout_report(monkeypatch, tmp_path):
+    import json
+    import run_task
+
+    yaml_path = tmp_path / "task.yaml"
+    yaml_path.write_text(
+        "deadline: 0.01\ntasks:\n  - name: wait\n    type: WaitForTrigger\n    timeout: 1\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(run_task.sys, "argv", ["run_task.py", str(yaml_path)])
+
+    assert run_task.main() == 1
+    report = json.loads((tmp_path / "task_report.json").read_text(encoding="utf-8"))
+    assert report["result"] == "TIMEOUT"
+    assert report["steps"][0]["status"] == "TIMEOUT"
