@@ -14,19 +14,15 @@ class TaskScheduler:
         self.state = "IDLE"
         self.current_index = 0
         self.step_records = []
+        self.node_map = {node.name: i for i, node in enumerate(nodes)}
 
-        self.node_map = {
-            node.name: index
-            for index, node in enumerate(nodes)
-        }
-
-    def _record_step(self, node, status, elapsed, retries, degraded):
+    def _record_step(self, node, status, started, retries=0, degraded=False):
         self.step_records.append({
             "name": node.name,
             "status": status,
-            "elapsed_s": round(elapsed, 3),
+            "elapsed_s": round(time.monotonic() - started, 3),
             "retries": retries,
-            "degraded": degraded
+            "degraded": degraded,
         })
 
     def _sleep_with_deadline(self, seconds):
@@ -34,87 +30,67 @@ class TaskScheduler:
             return
 
         deadline = self.ctx.deadline
-
         if deadline is None:
             time.sleep(seconds)
             return
 
         remaining = deadline - time.monotonic()
-
         if remaining <= 0:
             raise TaskDeadlineExceeded
 
         time.sleep(min(seconds, remaining))
-
         if time.monotonic() >= deadline:
             raise TaskDeadlineExceeded
 
     def _execute_node(self, node):
-        node_timeout = node.params.get("timeout")
         deadline = self.ctx.deadline
+        timeout = node.params.get("timeout")
 
         if deadline is not None:
             remaining = deadline - time.monotonic()
-
             if remaining <= 0:
                 node.cancel()
                 raise TaskDeadlineExceeded
-
-            if node_timeout is None:
-                timeout = remaining
-            else:
-                timeout = min(node_timeout, remaining)
-        else:
-            timeout = node_timeout
+            timeout = remaining if timeout is None else min(timeout, remaining)
 
         if timeout is None:
             return node.execute()
 
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(node.execute)
-
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(node.execute)
             try:
                 return future.result(timeout=timeout)
-
             except TimeoutError:
                 node.cancel()
-
                 try:
                     future.result()
                 except Exception:
                     pass
 
-                if (
-                    deadline is not None
-                    and time.monotonic() >= deadline
-                ):
+                if deadline is not None and time.monotonic() >= deadline:
                     raise TaskDeadlineExceeded
-
                 return "FAILED"
+
+    def _handle_deadline(self, node, started, retries, degraded):
+        self._record_step(node, "TIMEOUT", started, retries, degraded)
+        self.state = "FAILED"
+        return "TIMEOUT"
 
     def run(self):
         self.state = "RUNNING"
         self.current_index = 0
         self.step_records = []
-
         fallback_count = 0
         max_fallbacks = len(self.nodes)
 
         while self.current_index < len(self.nodes):
             node = self.nodes[self.current_index]
-            start_time = time.monotonic()
+            started = time.monotonic()
 
-            if (
-                self.ctx.deadline is not None
-                and start_time >= self.ctx.deadline
-            ):
-                self._record_step(
-                    node, "TIMEOUT", 0, 0, False
-                )
-                self.state = "FAILED"
-                return "TIMEOUT"
+            if self.ctx.deadline is not None and started >= self.ctx.deadline:
+                return self._handle_deadline(node, started, 0, False)
 
-            retry_count = 0
+            retries = 0
             retry_limit = node.params.get("retry", 0)
             degraded = False
 
@@ -124,164 +100,69 @@ class TaskScheduler:
 
                 try:
                     result = self._execute_node(node)
-
                 except TaskDeadlineExceeded:
-                    elapsed = time.monotonic() - start_time
-
-                    self._record_step(
-                        node,
-                        "TIMEOUT",
-                        elapsed,
-                        retry_count,
-                        degraded
+                    return self._handle_deadline(
+                        node, started, retries, degraded
                     )
-
-                    self.state = "FAILED"
-                    return "TIMEOUT"
 
                 if result == "SUCCESS":
-                    elapsed = time.monotonic() - start_time
-
-                    self._record_step(
-                        node,
-                        "SUCCESS",
-                        elapsed,
-                        retry_count,
-                        degraded
-                    )
-
+                    self._record_step(node, "SUCCESS", started, retries, degraded)
+                    self.state = "SUCCESS"
                     self.current_index += 1
                     break
 
-                elif result == "SKIPPED":
-                    elapsed = time.monotonic() - start_time
-
-                    self._record_step(
-                        node,
-                        "SKIPPED",
-                        elapsed,
-                        retry_count,
-                        degraded
-                    )
-
+                if result == "SKIPPED":
+                    self._record_step(node, "SKIPPED", started, retries, degraded)
+                    self.state = "SKIPPED"
                     self.current_index += 1
                     break
 
-                elif result == "FAILED":
-                    if retry_count < retry_limit:
-                        retry_count += 1
-                        self.state = "RETRYING"
-
-                        try:
-                            self._sleep_with_deadline(
-                                node.params.get("retry_interval", 0)
-                            )
-                        except TaskDeadlineExceeded:
-                            elapsed = time.monotonic() - start_time
-
-                            self._record_step(
-                                node,
-                                "TIMEOUT",
-                                elapsed,
-                                retry_count,
-                                degraded
-                            )
-
-                            self.state = "FAILED"
-                            return "TIMEOUT"
-
-                        continue
-
-                    # 重试耗尽后，优先处理 fallback
-                    fallback = node.params.get("fallback")
-
-                    if fallback is not None:
-                        if fallback not in self.node_map:
-                            elapsed = time.monotonic() - start_time
-
-                            self._record_step(
-                                node,
-                                "FAILED",
-                                elapsed,
-                                retry_count,
-                                True
-                            )
-
-                            self.state = "FAILED"
-                            return "FAILED"
-
-                        fallback_count += 1
-
-                        # 限制整个任务的 fallback 跳转次数
-                        if fallback_count > max_fallbacks:
-                            elapsed = time.monotonic() - start_time
-
-                            self._record_step(
-                                node,
-                                "FAILED",
-                                elapsed,
-                                retry_count,
-                                True
-                            )
-
-                            self.state = "FAILED"
-                            return "FAILED"
-
-                        elapsed = time.monotonic() - start_time
-
-                        self._record_step(
-                            node,
-                            "FAILED",
-                            elapsed,
-                            retry_count,
-                            True
-                        )
-
-                        self.current_index = self.node_map[fallback]
-                        break
-
-                    on_fail = node.params.get("on_fail", "abort")
-
-                    if on_fail == "skip":
-                        elapsed = time.monotonic() - start_time
-
-                        self._record_step(
-                            node,
-                            "SKIPPED",
-                            elapsed,
-                            retry_count,
-                            True
-                        )
-
-                        self.current_index += 1
-                        break
-
-                    elapsed = time.monotonic() - start_time
-
-                    self._record_step(
-                        node,
-                        "FAILED",
-                        elapsed,
-                        retry_count,
-                        degraded
-                    )
-
+                if result != "FAILED":
+                    self._record_step(node, "FAILED", started, retries, degraded)
                     self.state = "FAILED"
                     return "FAILED"
 
-                else:
-                    elapsed = time.monotonic() - start_time
+                if retries < retry_limit:
+                    retries += 1
+                    self.state = "RETRYING"
 
-                    self._record_step(
-                        node,
-                        "FAILED",
-                        elapsed,
-                        retry_count,
-                        degraded
-                    )
+                    try:
+                        self._sleep_with_deadline(
+                            node.params.get("retry_interval", 0)
+                        )
+                    except TaskDeadlineExceeded:
+                        return self._handle_deadline(
+                            node, started, retries, degraded
+                        )
+                    continue
 
+                fallback = node.params.get("fallback")
+                if fallback is not None:
+                    if fallback not in self.node_map:
+                        self._record_step(node, "FAILED", started, retries, True)
+                        self.state = "FAILED"
+                        return "FAILED"
+
+                    fallback_count += 1
+                    if fallback_count > max_fallbacks:
+                        self._record_step(node, "FAILED", started, retries, True)
+                        self.state = "FAILED"
+                        return "FAILED"
+
+                    self._record_step(node, "FAILED", started, retries, True)
                     self.state = "FAILED"
-                    return "FAILED"
+                    self.current_index = self.node_map[fallback]
+                    break
+
+                if node.params.get("on_fail", "abort") == "skip":
+                    self._record_step(node, "SKIPPED", started, retries, True)
+                    self.state = "SKIPPED"
+                    self.current_index += 1
+                    break
+
+                self._record_step(node, "FAILED", started, retries, degraded)
+                self.state = "FAILED"
+                return "FAILED"
 
         self.state = "SUCCESS"
         return "SUCCESS"
