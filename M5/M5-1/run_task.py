@@ -54,6 +54,37 @@ def build_node(config, ctx):
     return create_node(name, node_type, params, ctx)
 
 
+def validate_task_names(tasks):
+    """校验节点结构及名称，避免名称映射被重复节点覆盖。"""
+    names = set()
+
+    def visit(task):
+        if not isinstance(task, dict):
+            raise ValueError("Each task must be a mapping")
+
+        name = task.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("Missing or invalid required field: name")
+        if name in names:
+            raise ValueError(f"Duplicate task name: {name}")
+        names.add(name)
+
+        if "parallel" in task:
+            parallel = task["parallel"]
+            if not isinstance(parallel, dict):
+                raise ValueError(f"Parallel '{name}' must be a mapping")
+            branches = parallel.get("branches")
+            if not isinstance(branches, list) or not branches:
+                raise ValueError(f"Parallel '{name}' requires non-empty branches")
+            for branch in branches:
+                visit(branch)
+        elif not isinstance(task.get("type"), str) or not task["type"].strip():
+            raise ValueError(f"Node '{name}' missing required field: type")
+
+    for task in tasks:
+        visit(task)
+
+
 def load_task(path):
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -77,6 +108,7 @@ def load_task(path):
     if not isinstance(tasks, list) or not tasks:
         raise ValueError("Missing or empty tasks list")
 
+    validate_task_names(tasks)
     return config
 
 

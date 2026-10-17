@@ -426,3 +426,57 @@ def test_runner_writes_timeout_report(monkeypatch, tmp_path):
     report = json.loads((tmp_path / "task_report.json").read_text(encoding="utf-8"))
     assert report["result"] == "TIMEOUT"
     assert report["steps"][0]["status"] == "TIMEOUT"
+
+
+# ==================== YAML Configuration Validation ====================
+
+def test_runner_rejects_duplicate_task_names(tmp_path):
+    from run_task import load_task
+    import pytest
+
+    path = tmp_path / "duplicate.yaml"
+    path.write_text(
+        "tasks:\n  - name: duplicate\n    type: SpeakTTS\n"
+        "  - name: duplicate\n    type: SpeakTTS\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="Duplicate task name: duplicate"):
+        load_task(path)
+
+
+def test_runner_rejects_non_mapping_task(tmp_path):
+    from run_task import load_task
+    import pytest
+
+    path = tmp_path / "malformed.yaml"
+    path.write_text("tasks:\n  - hello\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="Each task must be a mapping"):
+        load_task(path)
+
+
+def test_runner_rejects_missing_type(tmp_path):
+    from run_task import load_task
+    import pytest
+
+    path = tmp_path / "missing_type.yaml"
+    path.write_text("tasks:\n  - name: unnamed_type\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="missing required field: type"):
+        load_task(path)
+
+
+def test_runner_rejects_invalid_parallel_and_duplicate_branch(tmp_path):
+    from run_task import load_task
+    import pytest
+
+    path = tmp_path / "bad_parallel.yaml"
+    path.write_text("tasks:\n  - name: group\n    parallel: hello\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="must be a mapping"):
+        load_task(path)
+
+    path.write_text(
+        "tasks:\n  - name: group\n    parallel:\n"
+        "      branches:\n        - name: group\n          type: SpeakTTS\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="Duplicate task name: group"):
+        load_task(path)
