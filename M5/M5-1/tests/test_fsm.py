@@ -215,3 +215,62 @@ def test_scheduler_deadline():
     assert scheduler.run() == "TIMEOUT"
     assert scheduler.state == "FAILED"
     assert node.count == 0
+
+def test_fallback_without_on_fail():
+    class MockNode:
+        def __init__(self, name, result, params=None):
+            self.name = name
+            self.result = result
+            self.params = params or {}
+
+        def execute(self):
+            return self.result
+
+        def cancel(self):
+            pass
+
+        def reset_cancel(self):
+            pass
+
+    nodes = [
+        MockNode("a", "FAILED", {"fallback": "b"}),
+        MockNode("b", "SUCCESS"),
+    ]
+
+    scheduler = TaskScheduler(nodes, TaskContext("fallback_test"))
+
+    assert scheduler.run() == "SUCCESS"
+    assert [step["name"] for step in scheduler.step_records] == ["a", "b"]
+    assert scheduler.step_records[0]["status"] == "FAILED"
+    assert scheduler.step_records[0]["degraded"] is True
+    assert scheduler.step_records[1]["status"] == "SUCCESS"
+
+
+def test_fallback_cycle_terminates():
+    class MockNode:
+        def __init__(self, name, fallback):
+            self.name = name
+            self.params = {"fallback": fallback}
+
+        def execute(self):
+            return "FAILED"
+
+        def cancel(self):
+            pass
+
+        def reset_cancel(self):
+            pass
+
+    nodes = [
+        MockNode("a", "b"),
+        MockNode("b", "a"),
+    ]
+
+    scheduler = TaskScheduler(nodes, TaskContext("cycle_test"))
+
+    assert scheduler.run() == "FAILED"
+    assert len(scheduler.step_records) == 3
+    assert all(
+        step["status"] == "FAILED"
+        for step in scheduler.step_records
+    )
