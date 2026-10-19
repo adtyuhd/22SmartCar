@@ -1,0 +1,43 @@
+topic_patterns:
+  - "/perception/**"
+  - "/navigation/**"
+  - "/control/**"
+  - "/hw/**"
+  - "/referee/**"
+
+special_topics:
+  task_state: "/task_state"
+  system_ready: "/system_ready"
+
+publish:
+  metrics_hz: 10
+  metrics_topic: "/dashboard/metrics"
+  faults_topic: "/dashboard/faults"
+  task_state_topic: "/dashboard/task_state"
+
+fault_rules:
+  critical_topic_patterns:
+    - "/perception/**"
+    - "/navigation/**"
+    - "/control/**"
+    - "/hw/**"
+
+  freq_low:
+    threshold_hz: 10.0
+    duration_s: 2.0
+
+  topic_timeout_s: 3.0
+  cpu_high_pct: 85.0
+  temp_high_c: 85.0
+  voltage_low_v: 10.5
+
+video:
+  enable: false
+  hz: 1
+  width: 320
+  height: 240
+
+host:
+  address: "0.0.0.0"
+  port: 8080
+  history_seconds: 180
