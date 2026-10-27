@@ -2,67 +2,62 @@
 import fnmatch, json, time
 from collections import deque
 from pathlib import Path
-import psutil, yaml, rclpy
+import yaml, rclpy
 from rclpy.node import Node
 from rclpy.executors import ExternalShutdownException
 from rclpy.parameter import Parameter
 from rclpy.qos import qos_profile_sensor_data
 from rcl_interfaces.msg import SetParametersResult
-from rosidl_runtime_py.utilities import get_message
-from rosidl_runtime_py.convert import message_to_ordereddict
 from std_msgs.msg import String
+
 
 class DashboardAggregator(Node):
     def __init__(self):
         super().__init__("dashboard_aggregator")
         path = Path(__file__).resolve().parents[1] / "config" / "dashboard.yaml"
         try: self.config = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        except (OSError, yaml.YAMLError) as exc:
-            self.get_logger().warning(f"配置文件读取失败 {path}: {exc}; 使用默认值"); self.config = {}
+        except (OSError, yaml.YAMLError) as e: self.get_logger().warning(f"配置读取失败: {e}"); self.config = {}
         pub, rules = self.config.get("publish", {}), self.config.get("fault_rules", {})
-        low = rules.get("freq_low", {})
-        special = self.config.get("special_topics", {})
+        low, special = rules.get("freq_low", {}), self.config.get("special_topics", {})
         self.task_source, self.ready_source = special.get("task_state", "/task_state"), special.get("system_ready", "/system_ready")
-        self.declare_parameter("topic_patterns", self.config.get("topic_patterns", []))
-        self.declare_parameter("metrics_hz", int(pub.get("metrics_hz", 10)))
+        self.declare_parameter("topic_patterns", self.config.get("topic_patterns", [])); self.declare_parameter("metrics_hz", int(pub.get("metrics_hz", 10)))
         defaults = {"topic_timeout_s": rules.get("topic_timeout_s", 3.0), "freq_low_hz": low.get("threshold_hz", 10.0), "freq_low_duration_s": low.get("duration_s", 2.0), "cpu_high_pct": rules.get("cpu_high_pct", 85.0), "temp_high_c": rules.get("temp_high_c", 85.0), "voltage_low_v": rules.get("voltage_low_v", 10.5)}
-        for name, value in defaults.items(): self.declare_parameter(name, float(value))
-        self.patterns = list(self.get_parameter("topic_patterns").value)
-        self.critical = rules.get("critical_topic_patterns", self.patterns)
+        for k, v in defaults.items(): self.declare_parameter(k, float(v))
+        self.patterns = list(self.get_parameter("topic_patterns").value); self.critical = rules.get("critical_topic_patterns", self.patterns)
         self.video_enabled = bool(self.config.get("video", {}).get("enable", False))
-        self.metrics_pub = self.create_publisher(String, pub.get("metrics_topic", "/dashboard/metrics"), 10); self.faults_pub = self.create_publisher(String, pub.get("faults_topic", "/dashboard/faults"), 10)
+        self.metrics_pub = self.create_publisher(String, pub.get("metrics_topic", "/dashboard/metrics"), 10)
+        self.faults_pub = self.create_publisher(String, pub.get("faults_topic", "/dashboard/faults"), 10)
         self.state_pub = self.create_publisher(String, pub.get("task_state_topic", "/dashboard/task_state"), 10)
         self.rtt_pub = self.create_publisher(String, "/dashboard/rtt_probe", 10); self.rtt_sub = self.create_subscription(String, "/dashboard/rtt_echo", self._on_rtt_echo, 10)
         self.rtt_pending, self.topic_subscriptions, self.stats, self.active_faults = {}, {}, {}, {}
-        self.samples = {key: deque(maxlen=1000) for key in ("confidence", "path_deviation")}
-        self.latest = {key: None for key in ("temperature_c", "voltage_v", "network_rtt_ms", "replanning_count")}
-        self.system_ready = None; psutil.cpu_percent(None)
+        self.samples = {k: deque(maxlen=1000) for k in ("confidence", "path_deviation")}
+        self.latest = {k: None for k in ("temperature_c", "voltage_v", "network_rtt_ms", "replanning_count")}
+        self.system_ready, self.last_temp_poll = None, 0.0
+        self.cpu_prev = tuple(map(int, Path("/proc/stat").read_text().splitlines()[0].split()[1:9]))
         self.add_on_set_parameters_callback(self._parameter_update)
         self.create_timer(1.0, self._discover); self.create_timer(1.0 / max(1.0, float(self.get_parameter("metrics_hz").value)), self._publish_metrics); self.create_timer(1.0, self._send_rtt_probe)
         self.get_logger().info(f"聚合节点已启动，模式数={len(self.patterns)}，指标频率={self.get_parameter('metrics_hz').value}Hz，视频默认关闭")
 
     def _parameter_update(self, params):
-        for param in params:
-            if param.name == "topic_patterns":
-                if param.type_ != Parameter.Type.STRING_ARRAY:
-                    return SetParametersResult(successful=False, reason="topic_patterns 必须是字符串列表")
-                self.patterns = list(param.value)
+        for p in params:
+            if p.name == "topic_patterns":
+                if p.type_ != Parameter.Type.STRING_ARRAY: return SetParametersResult(successful=False, reason="topic_patterns 必须是字符串列表")
+                self.patterns = list(p.value)
         return SetParametersResult(successful=True)
 
-    def _matches(self, topic, patterns=None):
-        return any(fnmatch.fnmatchcase(topic, p) for p in (self.patterns if patterns is None else patterns))
+    def _matches(self, topic, patterns=None): return any(fnmatch.fnmatchcase(topic, p) for p in (self.patterns if patterns is None else patterns))
 
     def _discover(self):
         special = {self.task_source, self.ready_source}
         for topic, types in self.get_topic_names_and_types():
-            if topic in self.topic_subscriptions or not types or topic.startswith("/dashboard/") or (topic not in special and not self._matches(topic)) or "sensor_msgs/msg/Image" in types[0] or "sensor_msgs/msg/CompressedImage" in types[0]: continue
+            if topic in self.topic_subscriptions or not types or topic.startswith("/dashboard/") or (topic not in special and not self._matches(topic)) or any(x in types[0] for x in ("sensor_msgs/msg/Image", "sensor_msgs/msg/CompressedImage")): continue
             try:
-                cls = get_message(types[0])
-                sub = self.create_subscription(cls, topic, lambda msg, name=topic: self._on_message(name, msg), qos_profile_sensor_data)
+                from rosidl_runtime_py.utilities import get_message
+                sub = self.create_subscription(get_message(types[0]), topic, lambda msg, name=topic: self._on_message(name, msg), qos_profile_sensor_data)
                 self.topic_subscriptions[topic] = sub
                 self.stats[topic] = {"type": types[0], "discovered": time.monotonic(), "times": deque(maxlen=200), "last": None, "delay_ms": None, "received": 0, "lost": 0, "seq": None, "low_since": None}
                 self.get_logger().info(f"已订阅 {topic} [{types[0]}]")
-            except Exception as exc: self.get_logger().warning(f"无法订阅 {topic} ({types[0]}): {exc}")
+            except Exception as e: self.get_logger().warning(f"无法订阅 {topic} ({types[0]}): {e}")
         for topic in list(self.topic_subscriptions):
             if topic not in special and not self._matches(topic):
                 self.destroy_subscription(self.topic_subscriptions.pop(topic)); self.stats.pop(topic, None)
@@ -75,13 +70,15 @@ class DashboardAggregator(Node):
         elif isinstance(obj, (list, tuple)):
             for item in obj: yield from self._fields(item)
 
+    def _cpu_percent(self):
+        c = tuple(map(int, Path("/proc/stat").read_text().splitlines()[0].split()[1:9])); p, self.cpu_prev = self.cpu_prev, c
+        total = sum(c) - sum(p); idle = c[3] + c[4] - p[3] - p[4]; return 100.0 * (total - idle) / total if total else 0.0
+
     def _on_message(self, topic, msg):
         now, state = time.monotonic(), self.stats[topic]
         state["times"].append(now); state["last"] = now; state["received"] += 1
         stamp = getattr(getattr(msg, "header", None), "stamp", None)
-        if stamp:
-            delay = self.get_clock().now().nanoseconds / 1e6 - (stamp.sec * 1000 + stamp.nanosec / 1e6)
-            state["delay_ms"] = delay if delay >= 0 else None
+        if stamp: delay = self.get_clock().now().nanoseconds / 1e6 - (stamp.sec * 1000 + stamp.nanosec / 1e6); state["delay_ms"] = delay if delay >= 0 else None
         for name, value in self._fields(msg):
             if not isinstance(value, (int, float)) or isinstance(value, bool): continue
             value = float(value)
@@ -95,19 +92,26 @@ class DashboardAggregator(Node):
             if name in ("rtt", "rtt_ms", "network_rtt_ms", "round_trip_time_ms"): self.latest["network_rtt_ms"] = value
             if name in ("replan_count", "replanning_count", "replans"): self.latest["replanning_count"] = int(value)
         if topic == self.task_source:
-            data = msg.data if isinstance(msg, String) else message_to_ordereddict(msg)
+            if isinstance(msg, String): data = msg.data
+            else:
+                from rosidl_runtime_py.convert import message_to_ordereddict
+                data = message_to_ordereddict(msg)
             if isinstance(data, str):
                 try: data = json.loads(data)
                 except ValueError: data = {"data": data}
             self.state_pub.publish(String(data=json.dumps(data)))
-        if topic == self.ready_source: self.system_ready = (values := dict(self._fields(msg))).get("ready", values.get("system_ready", getattr(msg, "data", None)))
+        if topic == self.ready_source:
+            values = dict(self._fields(msg)); self.system_ready = values.get("ready", values.get("system_ready", getattr(msg, "data", None)))
 
     def _send_rtt_probe(self):
-        try:
-            vals = [x.current for group in psutil.sensors_temperatures().values() for x in group if x.current is not None]
-            if vals and self.latest["temperature_c"] is None: self.latest["temperature_c"] = max(vals)
-        except (AttributeError, OSError, NotImplementedError): pass
-        token = str(time.monotonic_ns()); self.rtt_pending[token] = time.monotonic()
+        now = time.monotonic()
+        if self.latest["temperature_c"] is None and now - self.last_temp_poll >= 5.0:
+            self.last_temp_poll = now
+            try:
+                values = [int(v) / 1000 for p in Path("/sys/class/thermal").glob("thermal_zone*/temp") if (v := p.read_text().strip()).lstrip("-").isdigit()]
+                if values: self.latest["temperature_c"] = max(values)
+            except OSError: pass
+        token = str(time.monotonic_ns()); self.rtt_pending[token] = now
         if len(self.rtt_pending) > 10: self.rtt_pending.pop(next(iter(self.rtt_pending)))
         self.rtt_pub.publish(String(data=json.dumps({"token": token})))
 
@@ -126,44 +130,35 @@ class DashboardAggregator(Node):
         self.faults_pub.publish(String(data=json.dumps(event)))
 
     def _publish_metrics(self):
-        now, timeout = time.monotonic(), float(self.get_parameter("topic_timeout_s").value)
-        topics, delays, control_delays = {}, [], []
+        now, timeout = time.monotonic(), float(self.get_parameter("topic_timeout_s").value); topics, delays, controls = {}, [], []
         for topic, state in self.stats.items():
             age = now - (state["last"] if state["last"] is not None else state["discovered"])
             active, stale = any(self._matches(topic, [p]) for p in self.critical), age > timeout
-            recent = [t for t in state["times"] if t >= now - 1.0]
-            freq = len(recent) if state["last"] is not None and not stale else None
+            recent = [t for t in state["times"] if t >= now - 1.0]; freq = len(recent) if state["last"] is not None and not stale else None
             status = "disconnected" if stale else ("no_data" if state["last"] is None else "online")
             loss = round(100 * state["lost"] / max(1, state["received"] + state["lost"]), 2) if state["seq"] is not None else None
             topics[topic] = {"type": state["type"], "status": status, "frequency_hz": freq, "age_s": round(age, 3) if state["last"] is not None else None, "delay_ms": state["delay_ms"], "packet_loss_pct": loss}
-            if state["delay_ms"] is not None:
-                if topic.startswith("/navigation/"): delays.append(state["delay_ms"])
-                if topic.startswith("/control/"): control_delays.append(state["delay_ms"])
+            if state["delay_ms"] is not None: (delays if topic.startswith("/navigation/") else controls if topic.startswith("/control/") else []).append(state["delay_ms"])
             self._fault(f"SENSOR_TIMEOUT:{topic}", active and stale, topic, {"age_s": round(age, 3)})
             low = active and state["last"] is not None and (freq or 0) < float(self.get_parameter("freq_low_hz").value)
             state["low_since"] = (state["low_since"] or now) if low else None
-            low = low and now - state["low_since"] >= float(self.get_parameter("freq_low_duration_s").value)
-            self._fault(f"SENSOR_LOW_FREQUENCY:{topic}", low, topic, {"frequency_hz": freq})
-        cpu, temp, voltage = psutil.cpu_percent(None), self.latest["temperature_c"], self.latest["voltage_v"]
+            self._fault(f"SENSOR_LOW_FREQUENCY:{topic}", low and now - state["low_since"] >= float(self.get_parameter("freq_low_duration_s").value), topic, {"frequency_hz": freq})
+        cpu, temp, voltage = self._cpu_percent(), self.latest["temperature_c"], self.latest["voltage_v"]
         self._fault("CPU_HIGH", cpu > float(self.get_parameter("cpu_high_pct").value), "system", {"cpu_percent": cpu})
         self._fault("TEMPERATURE_HIGH", temp is not None and temp > float(self.get_parameter("temp_high_c").value), "system", {"temperature_c": temp})
         self._fault("VOLTAGE_LOW", voltage is not None and voltage < float(self.get_parameter("voltage_low_v").value), "system", {"voltage_v": voltage})
-        window = lambda key: [v for t, v in self.samples[key] if t >= now - 1.0]
+        window = lambda k: [v for t, v in self.samples[k] if t >= now - 1.0]
         conf, deviation = window("confidence"), window("path_deviation")
         perception = [v["frequency_hz"] for k, v in topics.items() if k.startswith("/perception/") and v["frequency_hz"] is not None]
-        metrics = {"timestamp": time.time(), "topics": topics, "perception_fps": max(perception) if perception else None, "confidence_mean": sum(conf) / len(conf) if conf else None, "navigation_delay_ms": sum(delays) / len(delays) if delays else None, "control_delay_ms": sum(control_delays) / len(control_delays) if control_delays else None, "replanning_count": self.latest["replanning_count"], "path_deviation": sum(deviation) / len(deviation) if deviation else None, "cpu_percent": cpu, "temperature_c": temp, "voltage_v": voltage, "network_rtt_ms": self.latest["network_rtt_ms"], "system_ready": self.system_ready, "video_enabled": self.video_enabled}
+        metrics = {"timestamp": time.time(), "topics": topics, "perception_fps": max(perception) if perception else None, "confidence_mean": sum(conf) / len(conf) if conf else None, "navigation_delay_ms": sum(delays) / len(delays) if delays else None, "control_delay_ms": sum(controls) / len(controls) if controls else None, "replanning_count": self.latest["replanning_count"], "path_deviation": sum(deviation) / len(deviation) if deviation else None, "cpu_percent": cpu, "temperature_c": temp, "voltage_v": voltage, "network_rtt_ms": self.latest["network_rtt_ms"], "system_ready": self.system_ready, "video_enabled": self.video_enabled}
         self.metrics_pub.publish(String(data=json.dumps(metrics)))
 
-def main(args=None):
-    rclpy.init(args=args)
-    node = DashboardAggregator()
-    try:
-        rclpy.spin(node)
-    except (KeyboardInterrupt, ExternalShutdownException):
-        pass
-    finally:
-        node.destroy_node()
-        rclpy.try_shutdown()
 
-if __name__ == "__main__":
-    main()
+def main(args=None):
+    rclpy.init(args=args); node = DashboardAggregator()
+    try: rclpy.spin(node)
+    except (KeyboardInterrupt, ExternalShutdownException): pass
+    finally: node.destroy_node(); rclpy.try_shutdown()
+
+
+if __name__ == "__main__": main()
