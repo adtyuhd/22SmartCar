@@ -26,7 +26,7 @@ fault_rules:
     threshold_hz: 10.0
     duration_s: 2.0
 
-  topic_timeout_s: 3.0
+  topic_timeout_s: 0.5
   cpu_high_pct: 85.0
   temp_high_c: 85.0
   voltage_low_v: 10.5
@@ -38,6 +38,7 @@ video:
   height: 240
 
 host:
+  command_topic: "/dashboard/commands"
   address: "0.0.0.0"
   port: 8080
   history_seconds: 180

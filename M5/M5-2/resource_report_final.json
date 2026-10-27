@@ -1,0 +1,39 @@
+{
+  "timestamp": "2026-10-27T04:48:57.237750-04:00",
+  "duration_s": 60,
+  "interval_s": 1.0,
+  "results": [
+    {
+      "target": "aggregator",
+      "label": "小车端聚合节点",
+      "pid": 31424,
+      "duration_s": 60,
+      "interval_s": 1.0,
+      "sample_count": 60,
+      "cpu_avg_percent": 1.952,
+      "memory_avg_mb": 46.982,
+      "memory_peak_mb": 47.0,
+      "cpu_limit_percent": 2.0,
+      "memory_limit_mb": 50.0,
+      "cpu_pass": true,
+      "memory_pass": true,
+      "status": "PASS"
+    },
+    {
+      "target": "host",
+      "label": "主机端 Web 应用",
+      "pid": 31425,
+      "duration_s": 60,
+      "interval_s": 1.0,
+      "sample_count": 60,
+      "cpu_avg_percent": 1.92,
+      "memory_avg_mb": 82.864,
+      "memory_peak_mb": 82.879,
+      "cpu_limit_percent": 5.0,
+      "memory_limit_mb": 200.0,
+      "cpu_pass": true,
+      "memory_pass": true,
+      "status": "PASS"
+    }
+  ]
+}
