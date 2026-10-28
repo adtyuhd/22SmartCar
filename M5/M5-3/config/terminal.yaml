@@ -1,0 +1,41 @@
+
+# M5-3 一体化操作终端配置
+version: 1
+
+operator:
+  # 优先使用环境变量 M53_OPERATOR 标识操作员
+  user_env: M53_OPERATOR
+
+hot_switch:
+  timeout_s: 3.0
+  switch_log: switch_log.csv
+
+  # 具体节点名称和模型路径必须按实际运行环境配置。
+  # 空路径会被管理器拒绝，不会执行未经配置的切换。
+  parameter_targets:
+    navigation: ""
+    perception: ""
+
+  model_target: perception
+  model_parameter: model_path
+
+  # 模型文件路径暂时留空，避免虚构本机不存在的模型文件。
+  # 确认真实文件路径后再配置。
+  models:
+    yolov8n_fp32:
+      path: ""
+    yolov8n_int8:
+      path: ""
+
+  # 场景使用目标节点别名和参数映射。
+  # 真实节点及参数名确认后再补充。
+  scenes: {}
+
+  # UI 滑块范围。实际参数名称仍须与目标节点保持一致。
+  parameter_ranges:
+    navigation.max_velocity:
+      min: 0.0
+      max: 1.0
+    perception.confidence_threshold:
+      min: 0.0
+      max: 1.0
