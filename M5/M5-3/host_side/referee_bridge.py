@@ -1,15 +1,14 @@
+
 #!/usr/bin/env python3
-"""M5-3 裁判协议适配器：状态同步、控制事件和审计记录。"""
+"""M5-3 裁判协议适配器：状态同步、控制事件、急停联动和审计。"""
 
 import argparse
 import json
 import math
 import sys
-import tempfile
 import threading
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 
 import rclpy
 from rclpy.executors import ExternalShutdownException
@@ -42,6 +41,8 @@ SUPPORTED_COMMANDS = {
     "SCORE_QUERY",
 }
 
+RESET_ALLOWED_STATES = {"STOPPED", "FAULT"}
+
 
 def utc_timestamp():
     """生成 UTC 时间戳。"""
@@ -72,7 +73,6 @@ def parse_payload(raw):
     else:
         return {}
 
-    # 防止非标准 JSON 数值等异常数据导致后续序列化失败。
     try:
         json.dumps(payload, ensure_ascii=False, allow_nan=False)
     except (TypeError, ValueError):
@@ -82,23 +82,29 @@ def parse_payload(raw):
 
 
 class RefereeBridge(Node):
-    """裁判适配器。
+    """裁判适配器及主机侧急停状态协调器。
 
-    输入：
+    裁判输入：
         /referee/cmd
 
-    输出：
+    急停联动输入：
+        /safety/fault
+        /emergency_stop
+        /safety/status
+
+    状态输出：
         /referee/status
         /task_state
 
-    控制事件：
+    任务控制事件：
         /task_start
         /task_pause
         /task_resume
         /task_stop
 
-    注意：控制事件需要后续任务控制模块消费。
-    发布成功不代表任务已经实际执行。
+    注意：
+        发布任务控制事件不代表任务已经实际执行。
+        本组件运行在主机侧，不创建额外的机器人进程。
     """
 
     def __init__(
@@ -134,16 +140,58 @@ class RefereeBridge(Node):
         self.penalty_time_s = 0.0
         self.score = None
 
-        # 每个适配器实例使用统一审计写入器。
+        # 急停锁存：普通 STOP 不能解除这个标志。
+        self._emergency_latched = False
+        self._emergency_request_id = None
+        self._emergency_source = None
+        self._emergency_reason = None
+
+        # 用于关联控制器结果与复位请求。
+        self._pending_stop_request_id = None
+        self._pending_reset_id = None
+
+        # 处理跨话题回调的到达顺序差异。
+        # RESET_OK 可能先于对应的 /emergency_stop 回调到达。
+        self._early_reset_results = {}
+
+        # 避免重复记录同一条控制器结果。
+        self._controller_status_seen = set()
+
         self.audit = AuditLogger(
             log_dir=audit_dir,
             user=audit_user,
         )
 
+        # 原有裁判指令订阅。
         self.cmd_sub = self.create_subscription(
             String,
             "/referee/cmd",
             self._on_referee_command,
+            10,
+        )
+
+        # 主机侧：接收安全模块的故障事件。
+        self.safety_fault_sub = self.create_subscription(
+            String,
+            "/safety/fault",
+            self._on_safety_fault,
+            10,
+        )
+
+        # 主机侧：观察急停请求并关联 request_id。
+        # 这不是小车端新增的订阅者。
+        self.emergency_command_sub = self.create_subscription(
+            String,
+            "/emergency_stop",
+            self._on_emergency_command,
+            10,
+        )
+
+        # 主机侧：读取小车端的控制器切换及复位结果。
+        self.safety_status_sub = self.create_subscription(
+            String,
+            "/safety/status",
+            self._on_safety_status,
             10,
         )
 
@@ -153,7 +201,6 @@ class RefereeBridge(Node):
             10,
         )
 
-        # M5-2 的聚合器已有 /task_state 订阅配置。
         self.task_state_pub = self.create_publisher(
             String,
             "/task_state",
@@ -165,6 +212,7 @@ class RefereeBridge(Node):
             for topic in CONTROL_TOPICS.values()
         }
 
+        # 每秒刷新一次状态和倒计时。
         self.timer = self.create_timer(
             1.0,
             self._on_timer,
@@ -172,11 +220,16 @@ class RefereeBridge(Node):
 
         self.get_logger().info(
             "裁判适配器已启动："
-            "订阅 /referee/cmd，"
+            "订阅 /referee/cmd、/safety/fault、"
+            "/emergency_stop、/safety/status；"
             "发布 /referee/status 和 /task_state"
         )
 
         self._publish_status()
+
+    # ---------------------------------------------------------
+    # 状态快照与发布
+    # ---------------------------------------------------------
 
     def _remaining_locked(self):
         """计算剩余时间；调用时需要持有状态锁。"""
@@ -211,6 +264,8 @@ class RefereeBridge(Node):
             "penalties": list(self.penalties),
             "score": self.score,
             "error": self.last_error,
+            "emergency_latched": self._emergency_latched,
+            "emergency_request_id": self._emergency_request_id,
         }
 
     def _publish_snapshot(self, snapshot):
@@ -273,19 +328,468 @@ class RefereeBridge(Node):
         if reason is not None:
             payload["reason"] = str(reason)
 
-        self.control_publishers[topic].publish(
-            String(
-                data=json.dumps(
-                    payload,
-                    ensure_ascii=False,
-                    allow_nan=False,
+        try:
+            self.control_publishers[topic].publish(
+                String(
+                    data=json.dumps(
+                        payload,
+                        ensure_ascii=False,
+                        allow_nan=False,
+                    )
                 )
             )
+            self.get_logger().info(
+                f"已发布任务控制事件：{command} -> {topic}"
+            )
+        except Exception as exc:
+            self.get_logger().error(
+                f"发布任务控制事件失败：{command}，{exc}"
+            )
+
+    # ---------------------------------------------------------
+    # 急停联动
+    # ---------------------------------------------------------
+
+    def _on_safety_fault(self, msg):
+        """处理 /safety/fault 上的故障事件。"""
+        payload = parse_payload(msg.data)
+
+        if not payload:
+            # 安全故障通道出现无法解析的消息时，采取保守策略。
+            payload = {
+                "type": "SAFETY_FAULT",
+                "source": "safety_fault_topic",
+                "reason": "收到无法解析的安全故障消息",
+            }
+
+        self._enter_emergency_fault(
+            payload,
+            default_source="safety_fault_topic",
         )
 
-        self.get_logger().info(
-            f"已发布任务控制事件：{command} -> {topic}"
+    def _on_emergency_command(self, msg):
+        """观察主机发出的 STOP / RESET 请求。"""
+        payload = parse_payload(msg.data)
+
+        if not payload:
+            self.get_logger().warning(
+                "/emergency_stop 收到无法解析的消息"
+            )
+            return
+
+        action = str(payload.get("action", "")).upper()
+        request_id = payload.get("request_id")
+
+        if not isinstance(request_id, str) or not request_id.strip():
+            self.get_logger().warning(
+                f"/emergency_stop 的 {action} 请求缺少 request_id"
+            )
+            return
+
+        request_id = request_id.strip()
+
+        if action == "STOP":
+            with self._lock:
+                self._pending_stop_request_id = request_id
+
+            # 即使 /safety/fault 因异常没有送达，
+            # STOP 请求本身也足以触发裁判侧故障锁存。
+            self._enter_emergency_fault(
+                {
+                    "type": "EMERGENCY_STOP",
+                    "state": "FAULT",
+                    "request_id": request_id,
+                    "source": payload.get("source", "emergency_stop"),
+                    "reason": payload.get(
+                        "reason",
+                        "收到 /emergency_stop STOP 请求",
+                    ),
+                },
+                default_source="emergency_stop",
+            )
+            return
+
+        if action != "RESET":
+            return
+
+        early_result = None
+        rejection = None
+
+        with self._lock:
+            if not self._emergency_latched:
+                rejection = "当前没有急停锁存，忽略复位请求"
+
+            elif payload.get("manual_confirmation") is not True:
+                rejection = "复位请求缺少明确的人工确认"
+
+            elif str(payload.get("match_state", "")).upper() not in (
+                RESET_ALLOWED_STATES
+            ):
+                rejection = (
+                    "比赛状态不允许复位；"
+                    "只允许 STOPPED 或 FAULT"
+                )
+
+            else:
+                self._pending_reset_id = request_id
+                self.last_command = "EMERGENCY_RESET_REQUEST"
+                self.last_source = str(
+                    payload.get("source", "host")
+                )
+                self.last_error = self._emergency_reason
+                self._sequence += 1
+
+                # 可能已经收到小车端的快速响应。
+                early_result = self._early_reset_results.pop(
+                    request_id,
+                    None,
+                )
+
+                snapshot = self._snapshot_locked()
+
+        if rejection is not None:
+            self.get_logger().warning(rejection)
+            return
+
+        self._publish_snapshot(snapshot)
+
+        if early_result is not None:
+            self._handle_reset_result(early_result)
+
+    def _enter_emergency_fault(self, payload, default_source):
+        """原子地进入急停 FAULT 状态并暂停任务。"""
+        request_id = payload.get("request_id")
+
+        if not isinstance(request_id, str) or not request_id.strip():
+            request_id = None
+        else:
+            request_id = request_id.strip()
+
+        source = str(payload.get("source", default_source))
+        reason = str(
+            payload.get("reason", "收到急停故障事件")
         )
+        fault_type = str(
+            payload.get("type", "SAFETY_FAULT")
+        )
+
+        with self._lock:
+            # 同一请求可能同时通过 /emergency_stop 和
+            # /safety/fault 到达；只处理一次。
+            if (
+                self._emergency_latched
+                and request_id == self._emergency_request_id
+            ):
+                return
+
+            old_state = self.state
+            remaining = self._remaining_locked()
+
+            if remaining is not None:
+                self._remaining_s = remaining
+
+            # 冻结倒计时，进入不可被普通 STOP 清除的 FAULT。
+            self._deadline = None
+            self._paused_remaining_s = None
+
+            self._emergency_latched = True
+            self._emergency_request_id = request_id
+            self._emergency_source = source
+            self._emergency_reason = reason
+
+            # 新的急停使旧的待复位结果失效。
+            self._pending_reset_id = None
+            self._early_reset_results.clear()
+
+            self.state = "FAULT"
+            self.phase = "FAULT"
+            self.last_command = "EMERGENCY_STOP"
+            self.last_source = source
+            self.last_error = reason
+            self._sequence += 1
+
+        # 先发暂停事件，不让审计写入延迟安全方向的控制。
+        self._publish_control(
+            "PAUSE",
+            source="emergency_stop",
+            reason=reason,
+        )
+
+        audit_ok = self._write_audit(
+            op="EMERGENCY_STOP",
+            source=source,
+            result="fault",
+            from_state=old_state,
+            to_state="FAULT",
+            details={
+                "type": fault_type,
+                "request_id": request_id,
+                "reason": reason,
+            },
+        )
+
+        with self._lock:
+            if not audit_ok:
+                self.last_error = (
+                    f"{reason}；急停审计日志写入失败"
+                )
+                self._sequence += 1
+
+            snapshot = self._snapshot_locked()
+
+        self.get_logger().error(
+            f"急停故障已锁存：{old_state} -> FAULT，"
+            f"request_id={request_id}"
+        )
+        self._publish_snapshot(snapshot)
+
+    def _on_safety_status(self, msg):
+        """处理小车端返回的控制器和复位状态。"""
+        payload = parse_payload(msg.data)
+
+        if not payload:
+            self.get_logger().warning(
+                "/safety/status 收到无法解析的消息"
+            )
+            return
+
+        state = str(payload.get("state", "")).upper()
+        request_id = payload.get("request_id")
+
+        if state in {"RESET_OK", "RESET_FAILED"}:
+            if not isinstance(request_id, str) or not request_id:
+                return
+
+            with self._lock:
+                if request_id != self._pending_reset_id:
+                    # 跨话题回调可能乱序；暂存有限数量的结果。
+                    self._early_reset_results[request_id] = payload
+
+                    while len(self._early_reset_results) > 16:
+                        oldest = next(iter(self._early_reset_results))
+                        self._early_reset_results.pop(oldest)
+
+                    return
+
+            self._handle_reset_result(payload)
+            return
+
+        if state in {"ESTOP_LATCHED", "ESTOP_FAILED"}:
+            self._record_controller_status(payload)
+
+    def _handle_reset_result(self, payload):
+        """只处理与当前复位请求匹配的小车端结果。"""
+        state = str(payload.get("state", "")).upper()
+        request_id = payload.get("request_id")
+        controller_result = payload.get("controller_result")
+
+        if state == "RESET_OK" and controller_result == "ok":
+            self._complete_emergency_reset(payload)
+        else:
+            self._fail_emergency_reset(payload)
+
+    def _complete_emergency_reset(self, payload):
+        """审计成功后解除裁判故障锁存，但不恢复比赛。"""
+        request_id = payload.get("request_id")
+
+        with self._lock:
+            if (
+                not self._emergency_latched
+                or request_id != self._pending_reset_id
+            ):
+                return
+
+            old_state = self.state
+
+            # 必须先记录复位结果；审计失败则继续保持 FAULT。
+            audit_ok = self._write_audit(
+                op="EMERGENCY_RESET",
+                source="robot_side",
+                result="ok",
+                from_state=old_state,
+                to_state="STOPPED",
+                details={
+                    "request_id": request_id,
+                    "controller_result": payload.get(
+                        "controller_result"
+                    ),
+                    "message": payload.get("message"),
+                },
+            )
+
+            if not audit_ok:
+                self.last_error = (
+                    "小车端已返回 RESET_OK，"
+                    "但裁判端审计失败；继续保持 FAULT"
+                )
+                self.last_source = "robot_side"
+                self.last_command = "EMERGENCY_RESET"
+                self._sequence += 1
+                snapshot = self._snapshot_locked()
+
+            else:
+                # 解除裁判侧故障锁存，回到停止状态。
+                # 绝不在这里发送 START、RESUME 或 ENABLE。
+                self._emergency_latched = False
+                self._emergency_request_id = None
+                self._emergency_source = None
+                self._emergency_reason = None
+
+                self._pending_reset_id = None
+                self._pending_stop_request_id = None
+
+                self._deadline = None
+                self._paused_remaining_s = None
+
+                self.state = "STOPPED"
+                self.phase = "STOPPED"
+                self.last_command = "EMERGENCY_RESET"
+                self.last_source = "robot_side"
+                self.last_error = None
+                self._sequence += 1
+
+                self._early_reset_results.pop(request_id, None)
+                snapshot = self._snapshot_locked()
+
+        self._publish_snapshot(snapshot)
+
+        if not audit_ok:
+            self.get_logger().error(
+                "复位审计失败：急停锁存仍然有效"
+            )
+            return
+
+        self.get_logger().warning(
+            "急停复位已确认；裁判状态为 STOPPED，"
+            "比赛和底盘不会自动恢复"
+        )
+
+    def _fail_emergency_reset(self, payload):
+        """复位失败时保持 FAULT，并记录失败结果。"""
+        request_id = payload.get("request_id")
+        reason = str(
+            payload.get("message", "小车端拒绝或未能完成复位")
+        )
+
+        with self._lock:
+            if (
+                not self._emergency_latched
+                or request_id != self._pending_reset_id
+            ):
+                return
+
+            old_state = self.state
+
+            audit_ok = self._write_audit(
+                op="EMERGENCY_RESET",
+                source="robot_side",
+                result="failed",
+                from_state=old_state,
+                to_state="FAULT",
+                details={
+                    "request_id": request_id,
+                    "robot_state": payload.get("state"),
+                    "controller_result": payload.get(
+                        "controller_result"
+                    ),
+                    "message": reason,
+                },
+            )
+
+            self._pending_reset_id = None
+            self.state = "FAULT"
+            self.phase = "FAULT"
+            self.last_command = "EMERGENCY_RESET"
+            self.last_source = "robot_side"
+
+            if audit_ok:
+                self.last_error = reason
+            else:
+                self.last_error = (
+                    f"{reason}；复位失败审计日志写入失败"
+                )
+
+            self._sequence += 1
+            snapshot = self._snapshot_locked()
+
+        self.get_logger().error(
+            f"急停复位失败，继续保持 FAULT：{reason}"
+        )
+        self._publish_snapshot(snapshot)
+
+    def _record_controller_status(self, payload):
+        """记录小车端控制器停用结果。"""
+        request_id = payload.get("request_id")
+        robot_state = str(payload.get("state", "")).upper()
+        controller_result = payload.get("controller_result")
+
+        if not isinstance(request_id, str) or not request_id:
+            return
+
+        with self._lock:
+            # 忽略不属于当前急停请求的旧反馈。
+            if request_id not in (
+                self._pending_stop_request_id,
+                self._emergency_request_id,
+            ):
+                return
+
+            key = (request_id, robot_state, controller_result)
+
+            if key in self._controller_status_seen:
+                return
+
+            self._controller_status_seen.add(key)
+            old_state = self.state
+
+            audit_result = (
+                "ok"
+                if (
+                    robot_state == "ESTOP_LATCHED"
+                    and controller_result == "ok"
+                )
+                else "failed"
+            )
+
+            audit_ok = self._write_audit(
+                op="EMERGENCY_STOP_CONTROLLER",
+                source="robot_side",
+                result=audit_result,
+                from_state=old_state,
+                to_state="FAULT",
+                details={
+                    "request_id": request_id,
+                    "robot_state": robot_state,
+                    "controller_result": controller_result,
+                    "message": payload.get("message"),
+                },
+            )
+
+            self.state = "FAULT"
+            self.phase = "FAULT"
+            self.last_source = "robot_side"
+            self.last_command = "EMERGENCY_STOP_CONTROLLER"
+
+            if audit_result == "failed":
+                self.last_error = str(
+                    payload.get(
+                        "message",
+                        "小车端控制器停用未成功",
+                    )
+                )
+            elif not audit_ok:
+                self.last_error = "控制器结果审计日志写入失败"
+            else:
+                self.last_error = self._emergency_reason
+
+            self._sequence += 1
+            snapshot = self._snapshot_locked()
+
+        self._publish_snapshot(snapshot)
+
+    # ---------------------------------------------------------
+    # 裁判协议
+    # ---------------------------------------------------------
 
     def _on_referee_command(self, msg):
         self.process_command(
@@ -315,8 +819,12 @@ class RefereeBridge(Node):
             self.last_error = None
 
             if command == "START":
-                if self.state not in ("READY", "STOPPED"):
+                if self._emergency_latched:
+                    error = "急停锁存期间禁止 START"
+
+                elif self.state not in ("READY", "STOPPED"):
                     error = f"当前状态 {self.state} 不允许 START"
+
                 else:
                     duration = payload.get(
                         "countdown_s",
@@ -331,10 +839,7 @@ class RefereeBridge(Node):
                     except (TypeError, ValueError):
                         duration = 0.0
 
-                    if (
-                        not math.isfinite(duration)
-                        or duration <= 0
-                    ):
+                    if not math.isfinite(duration) or duration <= 0:
                         error = "START 的倒计时必须是正数"
                     else:
                         self.state = "RUNNING"
@@ -368,8 +873,12 @@ class RefereeBridge(Node):
                     control_command = "PAUSE"
 
             elif command == "RESUME":
-                if self.state != "PAUSED":
+                if self._emergency_latched:
+                    error = "急停锁存期间禁止 RESUME"
+
+                elif self.state != "PAUSED":
                     error = f"当前状态 {self.state} 不允许 RESUME"
+
                 else:
                     remaining = self._remaining_locked()
 
@@ -386,14 +895,27 @@ class RefereeBridge(Node):
                         control_command = "RESUME"
 
             elif command == "STOP":
-                self._remaining_s = self._remaining_locked()
-                self._deadline = None
-                self._paused_remaining_s = None
+                if self._emergency_latched:
+                    # 普通 STOP 可以停止任务，但不能清除急停 FAULT。
+                    remaining = self._remaining_locked()
 
-                self.state = "STOPPED"
-                self.phase = str(
-                    payload.get("phase", "STOPPED")
-                )
+                    if remaining is not None:
+                        self._remaining_s = remaining
+
+                    self._deadline = None
+                    self._paused_remaining_s = None
+                    self.state = "FAULT"
+                    self.phase = "FAULT"
+
+                else:
+                    self._remaining_s = self._remaining_locked()
+                    self._deadline = None
+                    self._paused_remaining_s = None
+
+                    self.state = "STOPPED"
+                    self.phase = str(
+                        payload.get("phase", "STOPPED")
+                    )
 
                 control_command = "STOP"
 
@@ -426,10 +948,21 @@ class RefereeBridge(Node):
             else:
                 error = f"不支持的裁判指令：{command!r}"
 
-            if error is None and payload.get("phase") is not None:
+            # 急停锁存期间不允许其他命令覆盖 FAULT 阶段。
+            if (
+                error is None
+                and payload.get("phase") is not None
+                and not self._emergency_latched
+            ):
                 self.phase = str(payload["phase"])
 
-            self.last_error = error
+            if error is not None:
+                self.last_error = error
+            elif self._emergency_latched:
+                self.last_error = self._emergency_reason
+            else:
+                self.last_error = None
+
             self._sequence += 1
 
             new_state = self.state
@@ -449,6 +982,7 @@ class RefereeBridge(Node):
             "penalty_time_s",
             "added_time_s",
             "score",
+            "request_id",
         ):
             if key in payload:
                 details[key] = payload[key]
@@ -469,8 +1003,6 @@ class RefereeBridge(Node):
         )
 
         if not audit_ok:
-            # 审计失败时，不允许启动或恢复任务。
-            # PAUSE 和 STOP 属于停止方向的控制，仍然发布。
             with self._lock:
                 audit_error = "审计日志写入失败"
 
@@ -479,11 +1011,21 @@ class RefereeBridge(Node):
                 else:
                     self.last_error = audit_error
 
-                if (
+                if self._emergency_latched:
+                    # 即使审计失败，急停锁存也不能被解除。
+                    self.state = "FAULT"
+                    self.phase = "FAULT"
+                    self._deadline = None
+                    self._paused_remaining_s = None
+
+                    if command in ("START", "RESUME"):
+                        control_command = None
+
+                elif (
                     command in ("PAUSE", "STOP")
                     and error is None
                 ):
-                    # 保留安全方向的控制事件。
+                    # 安全方向的控制事件仍然允许发布。
                     pass
 
                 elif (
@@ -522,6 +1064,10 @@ class RefereeBridge(Node):
 
         self._publish_snapshot(snapshot)
 
+    # ---------------------------------------------------------
+    # 倒计时看门狗
+    # ---------------------------------------------------------
+
     def _on_timer(self):
         """刷新倒计时，并检测超时却未收到 STOP 的情况。"""
         countdown_fault = False
@@ -557,7 +1103,7 @@ class RefereeBridge(Node):
                 from_state=old_state,
                 to_state="FAULT",
                 details={
-                    "reason": "COUNTDOWN_EXPIRED_WITHOUT_STOP"
+                    "reason": "COUNTDOWN_EXPIRED_WITHOUT_STOP",
                 },
             )
 
