@@ -15,7 +15,7 @@ import rclpy
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictBool
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 
@@ -23,6 +23,7 @@ from audit import AuditLogger
 from hot_switch import HotSwitchError, HotSwitchManager
 from referee_bridge import RefereeBridge
 from safety import SafetyController
+from task_control import TaskControl, SkipUnavailable, SkipRejected
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -38,6 +39,7 @@ class Runtime:
     executor: MultiThreadedExecutor
     spin_thread: threading.Thread
     ros_initialized_here: bool
+    task_control: TaskControl
 
 
 _runtime: Runtime | None = None
@@ -115,6 +117,7 @@ def build_runtime() -> Runtime:
             executor=executor,
             spin_thread=spin_thread,
             ros_initialized_here=ros_initialized_here,
+            task_control=TaskControl(AuditLogger(log_dir=str(audit_dir), user=user)),
         )
 
     except Exception:
@@ -174,6 +177,7 @@ def terminal_status(runtime: Runtime) -> dict:
         "safety": runtime.safety.get_state(),
         "hot_switch": runtime.hot_switch.get_config_summary(),
         "model_paths_configured": model_paths_configured,
+        "task_control": runtime.task_control.capabilities(),
     }
 
 
@@ -257,7 +261,34 @@ class EmergencyStopRequest(BaseModel):
 
 
 class EmergencyResetRequest(BaseModel):
-    manual_confirmation: bool = False
+    manual_confirmation: StrictBool = False
+
+
+class TaskSkipRequest(BaseModel):
+    task_id: str = Field(min_length=1, max_length=100, pattern=r".*\S.*")
+    node_id: str = Field(min_length=1, max_length=100, pattern=r".*\S.*")
+    reason: str = Field(min_length=1, max_length=300, pattern=r".*\S.*")
+    manual_confirmation: StrictBool = False
+
+
+@app.get("/api/tasks/capabilities")
+def task_capabilities():
+    return require_runtime().task_control.capabilities()
+
+
+@app.post("/api/tasks/skip", status_code=202)
+def skip_task(request: TaskSkipRequest):
+    runtime = require_runtime()
+    try:
+        return runtime.task_control.request_skip(
+            **request.model_dump(),
+            match_state=referee_snapshot(runtime.referee)["status"],
+            latched=runtime.safety.get_state()["latched"],
+        )
+    except SkipUnavailable as exc:
+        raise HTTPException(status_code=501, detail=str(exc)) from exc
+    except SkipRejected as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.get("/health")
@@ -555,6 +586,14 @@ label{display:block;margin-top:10px}
 </section>
 
 <section class="card">
+<h2>人工跳过任务节点</h2>
+<p id="taskCapability" class="warning">正在检查调度器能力……</p>
+<label>任务 ID <input id="skipTask" maxlength="100"></label>
+<label>当前节点 ID <input id="skipNode" maxlength="100"></label>
+<label>跳过原因 <input id="skipReason" maxlength="300"></label>
+<button id="skipButton" disabled onclick="skipTaskNode()">人工确认并请求跳过</button>
+</section>
+<section class="card">
 <h2>实时状态</h2>
 <p id="summary">正在连接……</p>
 <button onclick="refresh()">立即刷新</button>
@@ -655,6 +694,10 @@ async function loadConfig() {
 async function refresh() {
   try {
     const data = await api("/api/status");
+    const capability = data.task_control;
+    document.getElementById("taskCapability").textContent = capability.message;
+    document.getElementById("skipButton").disabled =
+      !capability.skip_available || data.safety.latched || data.referee.status !== "RUNNING";
     const r = data.referee;
     const s = data.safety;
 
@@ -730,6 +773,22 @@ async function switchScene() {
     notice("场景切换完成");
   } catch (error) {
     notice("场景切换失败：" + error.message, true);
+  }
+  await refresh();
+}
+
+async function skipTaskNode() {
+  if (!window.confirm("确认请求跳过指定的当前节点？请求接受不代表节点已跳过。")) return;
+  try {
+    const data = await api("/api/tasks/skip", "POST", {
+      task_id: document.getElementById("skipTask").value.trim(),
+      node_id: document.getElementById("skipNode").value.trim(),
+      reason: document.getElementById("skipReason").value.trim(),
+      manual_confirmation: true
+    });
+    notice(data.message);
+  } catch (error) {
+    notice("跳过请求失败：" + error.message, true);
   }
   await refresh();
 }
