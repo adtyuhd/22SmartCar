@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+.pytest_cache/
+work/
+audit_log_*.jsonl
+switch_log.csv
+.ros/

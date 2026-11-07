@@ -1,0 +1,78 @@
+# M5-3 一体化操作终端
+
+本目录独立提供 FastAPI 网页、裁判状态适配、ROS 2 参数/模型/场景热切、主机急停、机器人侧急停组件与哈希链审计。所有开发与提交仅涉及 `M5/M5-3/`，不导入或修改 M5-1 调度器。
+
+## 环境与启动
+
+ROS 2 Humble 使用系统 Python 3.10，不能直接使用当前 Conda Python 3.14。ROS 系统需已有 `rclpy`、`std_msgs`、`geometry_msgs`、`rcl_interfaces`；机器人侧组件另需 `controller_manager_msgs`。
+
+在本目录执行：
+
+```bash
+unset PYTHONHOME PYTHONPATH
+source /opt/ros/humble/setup.bash
+/usr/bin/python3 -m venv --system-site-packages .venv
+.venv/bin/python -m pip install --no-cache-dir -r requirements.txt -r requirements-test.txt
+mkdir -p work/ros_logs
+export ROS_LOG_DIR="$PWD/work/ros_logs"
+export M53_OPERATOR=operator_name
+.venv/bin/python -B host_side/operator_terminal.py --host 127.0.0.1 --port 8081
+```
+
+打开 `http://127.0.0.1:8081/`，接口说明在 `/docs`。默认仅监听本机；远程访问请通过受控网络或 SSH 转发。服务没有账户认证，不宜直接暴露至公共网络。
+
+`--config` 指定 YAML，`--match-duration-s` 设置默认比赛时长。`M53_AUDIT_DIR` 指定审计目录，默认本项目根目录；开发验收时请保持所有输出位于本目录。启动单 worker，避免生成多个控制运行时。
+
+## 配置与行为
+
+编辑 `config/terminal.yaml`：
+
+- `parameter_targets`：实际 ROS 节点绝对名称；默认空值会拒绝操作。
+- `parameter_ranges`：允许人工修改的数值参数及范围；目标节点须已声明这些参数。
+- `models`：实际模型文件路径；空路径或文件不存在会拒绝切换。路径参数更新、回读成功不证明模型加载成功。
+- `scenes`：按目标别名配置参数组，例如 `scenes.slow.parameters.navigation.max_velocity: 0.2`。跨节点失败会逆序补偿，补偿失败会明确报告；不保证跨节点全局原子性。
+- `timeout_s`：每次服务等待/响应的超时；整个场景切换可能涉及多次等待。通信超时后的远端执行结果可能不确定，需现场复核。
+- `switch_log`：切换 CSV 路径；相对路径以本目录为基准。
+
+网页提供比赛控制、加罚、参数修改、模型/场景切换、急停/人工复位和状态轮询。
+
+## HTTP 接口
+
+| 接口 | 含义 |
+|---|---|
+| `GET /health` | ROS context 与执行线程状态，需检查返回字段 |
+| `GET /api/status`、`/api/config` | 裁判、安全、配置与任务控制能力 |
+| `POST /api/referee/command` | START/PAUSE/RESUME/STOP/PENALTY/SCORE_QUERY |
+| `POST /api/parameters` | target、parameter、value、可选 experiment |
+| `POST /api/models` | model_id、可选 experiment；不承诺实际加载完成 |
+| `POST /api/scenes` | scene_name、可选 experiment |
+| `POST /api/emergency-stop` | reason；202 仅表示请求提交 |
+| `POST /api/emergency-reset` | manual_confirmation 必须为 JSON 布尔 true；等待匹配反馈 |
+| `GET /api/tasks/capabilities` | 当前是否存在跳过适配器 |
+| `POST /api/tasks/skip` | task_id、node_id、reason、manual_confirmation；默认 501 |
+
+比赛状态冲突和业务拒绝通常返回 409；输入校验失败返回 422；运行时未就绪返回 503。人工确认字段拒绝字符串 `"true"` 和数值 1。
+
+### 人工跳过的实现边界
+
+当前运行时没有接入跳过后端：`skip_available=false`，页面按钮禁用，POST 返回 501 并记录 unavailable 审计。不会发布虚构的跳过话题，也不会调用 M5-1 私有字段或假装实际节点已跳过。
+
+`host_side/task_control.py` 定义独立 `SkipBackend` 协议，供将来有安全取消能力的调度器集成。后端必须原子核对 task_id/node_id，处理节点退出、资源释放、并发重复请求及状态推进，并返回真实请求 ID；过期身份或不可中断任务须拒绝。适配器要求人工确认、RUNNING 且无急停；这些本地检查不能代替后端的原子校验。后端接受也只返回 `execution_confirmed=false`。当前没有执行结果反馈协议，也没有通过配置启用真实后端的入口。测试替身仅验证此协议，不能证明能跳过 M5-1 正在运行的节点。
+
+### 急停与实车边界
+
+主机发布零速度、`/emergency_stop` 和 `/safety/fault`，等待 `/safety/status`。仅匹配当前请求 ID 的成功复位反馈可解除主机锁存，复位不会自动恢复比赛或底盘。
+
+`robot_side/emergency_stop_node.py` 是附着于已有 ROS 节点的 `EmergencyStopGuard`，不是可直接运行的节点。当前范围内没有修改其他项目来安装该组件，因此仅启动网页不能保证机器人端已接入。已有机器人节点需由对应项目负责人实例化组件，并确认实际控制器名、切换服务、速度命令仲裁和独立物理急停链路。组件已有 ENABLE 协议，但本次不添加自动激活或主机恢复入口。
+
+## 测试与审计
+
+```bash
+bash tools/run_tests.sh       # 单元和隔离 HTTP 测试；跳过真实 DDS 测试
+bash tools/run_tests.sh --ros # 加上真实 ROS 2 服务与应用生命周期集成测试
+.venv/bin/python -B tools/verify_audit.py --log audit_log_YYYYMMDD.jsonl
+```
+
+测试脚本固定 DDS 域 173、仅本机通信，使用模拟参数节点；运行前确认该域不用于机器人。临时文件和 ROS 日志在本目录 `work/`。运行 `--ros` 不会运行急停硬件指令。SHA-256 链能发现现存记录修改/删除/重排；检测尾部截断需另外保留可信末端哈希，再传入 `--expected-final-hash`。哈希链不是数字签名，不能抵抗能重写整条链的攻击者。
+
+详细验收范围和实车检查见 [docs/acceptance.md](docs/acceptance.md)。
