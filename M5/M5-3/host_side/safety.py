@@ -499,6 +499,14 @@ class SafetyController:
             )
             return
 
+        if not isinstance(payload, dict):
+            self.node.get_logger().warning("忽略非对象的小车端安全状态")
+            return
+        request_id = payload.get("request_id")
+        if not isinstance(request_id, str) or not request_id.strip():
+            self.node.get_logger().warning("忽略缺少请求 ID 的小车端安全状态")
+            return
+
         state = str(payload.get("state", "UNKNOWN")).upper()
         request_id = payload.get("request_id")
         controller_result = str(
@@ -538,7 +546,7 @@ class SafetyController:
                     },
                 }
 
-            elif request_id == self._pending_reset_id:
+            elif self._pending_reset_id is not None and request_id == self._pending_reset_id:
                 if (
                     state == "RESET_OK"
                     and controller_result == "ok"
