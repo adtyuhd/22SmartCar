@@ -68,12 +68,19 @@ trap 'if [ -n "${node_pid:-}" ]; then kill "$node_pid" 2>/dev/null || true; wait
 import os
 from pathlib import Path
 import rclpy
+from rclpy.executors import ExternalShutdownException
 
 rclpy.init()
 node = rclpy.create_node("m54_test_navigation")
 node.declare_parameter("max_velocity", 0.2)
 (Path(os.environ["M54_TEST_DIR"]) / "ready").touch()
-rclpy.spin(node)
+try:
+    rclpy.spin(node)
+except (ExternalShutdownException, KeyboardInterrupt):
+    pass
+finally:
+    node.destroy_node()
+    rclpy.try_shutdown()
 PY
 node_pid=$!
 for i in {1..50}; do
@@ -104,8 +111,11 @@ assert any(row["op"] == "SCENE_SWITCH" and row["result"] == "ok" for row in rows
 assert list((directory / "logs").glob("audit_log_*.jsonl"))
 PY
 ros2 param get /m54_test_navigation max_velocity | grep -Fx 'Double value is: 0.35'
+/usr/bin/python3 ../M5-3/tools/verify_audit.py --log "$M54_TEST_DIR"/logs/audit_log_*.jsonl
 printf 'ROS hot-load PASS. Evidence: %s\n' "$M54_TEST_DIR"
 )
 ```
 
 无索引的 zstd/LZ4 构造 MCAP 也已验证能解码 ROS 2 String CDR。人为改错数据块 CRC 时，两种编码均返回可读错误。
+
+本机隔离域验收已回读 max_velocity=0.35，并核对 SCENE_SWITCH 切换成功与审计链。真实跑车和考官原始 MCAP 按现场环境单独验收。
