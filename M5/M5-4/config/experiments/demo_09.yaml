@@ -1,0 +1,8 @@
+base: scene_race.yaml
+base_sha256: b45e02eb4887349ddf107f584f654fc27c49b620db1f2f518a5abb59373682ff
+base_git: 5974f83fb17ce1d4b9756f1b464ba478ba28a34c
+created_at: '2026-11-14T11:15:36.011900+00:00'
+description: candidate replay
+expected: []
+overrides:
+  nav_speed: 0.9
