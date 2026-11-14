@@ -1,0 +1,9 @@
+nav_speed: 0.8
+navigation:
+  fallback: lidar_only
+perception:
+  min_frequency_hz: 10
+models:
+  demo:
+    path: data/demo_model.json
+runner: {}
