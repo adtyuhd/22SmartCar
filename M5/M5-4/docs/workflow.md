@@ -50,3 +50,62 @@ source /opt/ros/humble/setup.bash
 ```
 
 现场计时应使用考官原始数据。开发验证对有块索引的 321 MiB 构造文件测得 0.05 秒，跳过 41 个无关块。此耗时取决于块索引、无关数据的分布及关键块的压缩情况。
+
+### 在本机验证 ROS 参数回读
+
+在 M5-4 目录执行下面整段。测试节点只发布参数服务，使用独立的 DDS 域，不启动控制器。验收会检查实际节点参数、M5-3 切换 CSV 和审计日志。
+
+```bash
+(
+set -e
+source /opt/ros/humble/setup.bash
+export ROS_DOMAIN_ID=93 ROS_LOCALHOST_ONLY=1
+export PYTHONPATH="$PWD/scripts${PYTHONPATH:+:$PYTHONPATH}" PYTHONDONTWRITEBYTECODE=1
+export M54_TEST_DIR="$(mktemp -d)"
+export ROS_LOG_DIR="$M54_TEST_DIR/ros"
+trap 'if [ -n "${node_pid:-}" ]; then kill "$node_pid" 2>/dev/null || true; wait "$node_pid" 2>/dev/null || true; fi' EXIT
+/usr/bin/python3 - <<'PY' &
+import os
+from pathlib import Path
+import rclpy
+
+rclpy.init()
+node = rclpy.create_node("m54_test_navigation")
+node.declare_parameter("max_velocity", 0.2)
+(Path(os.environ["M54_TEST_DIR"]) / "ready").touch()
+rclpy.spin(node)
+PY
+node_pid=$!
+for i in {1..50}; do
+    [ -f "$M54_TEST_DIR/ready" ] && break
+    sleep 0.1
+done
+test -f "$M54_TEST_DIR/ready"
+/usr/bin/python3 - <<'PY'
+import csv
+import os
+from pathlib import Path
+from exp import ROOT, hot_load_ros, read_config, write_config
+
+directory = Path(os.environ["M54_TEST_DIR"])
+terminal = read_config(ROOT.parent / "M5-3/config/terminal.yaml")
+terminal["hot_switch"]["parameter_targets"]["navigation"] = "/m54_test_navigation"
+terminal["hot_switch"]["timeout_s"] = 8.0
+path = directory / "terminal.yaml"
+write_config(path, terminal)
+hot_load_ros(
+    {"nav_speed": 0.35},
+    {"terminal": str(path), "bindings": {"navigation": {"max_velocity": "nav_speed"}}},
+    directory, "m54_ros_acceptance",
+)
+with (directory / "switch_log.csv").open() as stream:
+    rows = list(csv.DictReader(stream))
+assert any(row["op"] == "SCENE_SWITCH" and row["result"] == "ok" for row in rows), rows
+assert list((directory / "logs").glob("audit_log_*.jsonl"))
+PY
+ros2 param get /m54_test_navigation max_velocity | grep -Fx 'Double value is: 0.35'
+printf 'ROS hot-load PASS. Evidence: %s\n' "$M54_TEST_DIR"
+)
+```
+
+无索引的 zstd/LZ4 构造 MCAP 也已验证能解码 ROS 2 String CDR。人为改错数据块 CRC 时，两种编码均返回可读错误。
