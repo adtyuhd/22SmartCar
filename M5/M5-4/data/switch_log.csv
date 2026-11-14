@@ -1,0 +1,2 @@
+ts,op,source,user,target,from_value,to_value,result,details
+1789830063,PARAMETER_SET,demo,sample,navigation,"{""mode"":""fusion""}","{""mode"":""lidar_only""}",ok,{}

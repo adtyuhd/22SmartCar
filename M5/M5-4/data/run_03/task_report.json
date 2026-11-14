@@ -1,0 +1,15 @@
+{
+  "task_id": "demo-3",
+  "started_at": 1789830180,
+  "result": "TIMEOUT",
+  "total_elapsed_s": 40,
+  "steps": [
+    {
+      "name": "navigate",
+      "status": "TIMEOUT",
+      "elapsed_s": 32,
+      "retries": 1,
+      "degraded": false
+    }
+  ]
+}

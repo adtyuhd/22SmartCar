@@ -1,0 +1,2 @@
+{"event": "fault_response", "event_id": "camera-1", "fault_id": "camera_degraded", "wall_time": 1789830063, "action": "nav fallback to lidar_only", "cost": "+12s"}
+{"event": "run_complete", "wall_time": 1789830065}

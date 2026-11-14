@@ -1,0 +1,15 @@
+{
+  "task_id": "demo-1",
+  "started_at": 1789830060,
+  "result": "SUCCESS",
+  "total_elapsed_s": 24,
+  "steps": [
+    {
+      "name": "navigate",
+      "status": "SUCCESS",
+      "elapsed_s": 17,
+      "retries": 1,
+      "degraded": true
+    }
+  ]
+}
