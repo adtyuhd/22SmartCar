@@ -1,6 +1,7 @@
 """Read allowlisted dashboard messages from an indexed or unindexed MCAP."""
 import ctypes
 import ctypes.util
+from functools import lru_cache
 import io
 import json
 import struct
@@ -29,13 +30,20 @@ def string(stream):
     return blob(stream).decode()
 
 
-def decompress(name, data, size):
-    if not name:
-        return data
+@lru_cache(maxsize=2)
+def compression_library(name):
     library = ctypes.util.find_library(name) if name in {"zstd", "lz4"} else None
     if not library:
         raise ValueError(f"缺少 MCAP 解压库 lib{name}")
-    lib, output = ctypes.CDLL(library), ctypes.create_string_buffer(size)
+    return ctypes.CDLL(library)
+
+
+def decompress(name, data, size):
+    if not name:
+        return data
+    if not data:
+        raise ValueError("压缩块内容为空")
+    lib, output = compression_library(name), ctypes.create_string_buffer(size)
     if name == "zstd":
         lib.ZSTD_decompress.argtypes = [ctypes.c_void_p, ctypes.c_size_t,
                                         ctypes.c_char_p, ctypes.c_size_t]
@@ -43,7 +51,15 @@ def decompress(name, data, size):
         length = lib.ZSTD_decompress(output, size, data, len(data))
     else:
         context = ctypes.c_void_p()
-        lib.LZ4F_createDecompressionContext(ctypes.byref(context), 100)
+        lib.LZ4F_createDecompressionContext.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_uint]
+        lib.LZ4F_createDecompressionContext.restype = ctypes.c_size_t
+        lib.LZ4F_freeDecompressionContext.argtypes = [ctypes.c_void_p]
+        lib.LZ4F_freeDecompressionContext.restype = ctypes.c_size_t
+        lib.LZ4F_isError.argtypes = [ctypes.c_size_t]
+        lib.LZ4F_isError.restype = ctypes.c_uint
+        created = lib.LZ4F_createDecompressionContext(ctypes.byref(context), 100)
+        if lib.LZ4F_isError(created):
+            raise ValueError("无法创建 LZ4 解压上下文")
         source = ctypes.create_string_buffer(data)
         consumed = length = 0
         try:
@@ -54,7 +70,7 @@ def decompress(name, data, size):
                 remaining = lib.LZ4F_decompress(
                     context, ctypes.byref(output, length), ctypes.byref(capacity),
                     ctypes.byref(source, consumed), ctypes.byref(available), None)
-                if remaining > 2**63 or not available.value:
+                if lib.LZ4F_isError(remaining) or not available.value:
                     raise ValueError("LZ4 数据损坏")
                 consumed += available.value
                 length += capacity.value
@@ -125,7 +141,10 @@ def read_mcap(path, topics=TOPICS):
                 compression = string(stream)
                 if size > 512 * 1024 * 1024:
                     raise ValueError("单块解压大小超限")
-                raw = decompress(compression, blob(stream, "Q"), size)
+                compressed_size, = unpack("Q", stream)
+                if compressed_size != finish - stream.tell() or compressed_size > 512 * 1024 * 1024:
+                    raise ValueError("MCAP 数据块压缩长度无效")
+                raw = decompress(compression, stream.read(compressed_size), size)
                 if len(raw) != size or (crc and zlib.crc32(raw) != crc):
                     raise ValueError("MCAP 数据块长度或 CRC 错误")
                 scan(io.BytesIO(raw), len(raw))
@@ -160,7 +179,7 @@ def read_mcap(path, topics=TOPICS):
                         selected_chunks[offset] = any(channels[i][0] in topics for i in ids)
             stream.seek(8)
             scan(stream, summary or footer)
-    except (OSError, ValueError, OverflowError, struct.error) as exc:
+    except (OSError, ValueError, OverflowError, struct.error, RecursionError) as exc:
         issues.append(f"MCAP 读取失败（可用的日志与任务报告仍会复盘）：{exc}")
     messages.sort(key=lambda item: item[0])
     if not messages:
