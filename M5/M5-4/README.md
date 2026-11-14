@@ -231,3 +231,8 @@ python scripts/gen_baseline.py --exp "nav_speed_0.9" --out baseline_package_2026
 - 禁止 `verify_baseline.sh` 没有明确阈值（"看起来正常"不算通过）
 - 禁止依赖写死在代码里（异机验证会挂）
 - 禁止把"与上一把对比"做成"手动指定上一把文件"（要能自动找最近一次）
+
+## 6. 使用与验收
+
+- [复盘字段与数据接口](docs/review_fields.md)
+- [样本回放、现场运行与基线验包](docs/workflow.md)
