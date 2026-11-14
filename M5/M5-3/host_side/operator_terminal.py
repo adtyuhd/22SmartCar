@@ -4,6 +4,7 @@
 
 import argparse
 import json
+import math
 import os
 import threading
 from contextlib import asynccontextmanager
@@ -14,7 +15,7 @@ from typing import Any, Literal
 import rclpy
 import uvicorn
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field, StrictBool
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
@@ -164,12 +165,7 @@ def require_runtime() -> Runtime:
 
 def terminal_status(runtime: Runtime) -> dict:
     """汇总比赛、安全和热切配置状态。"""
-    model_config = runtime.hot_switch.hot_config.get("models", {})
-
-    model_paths_configured = {
-        name: bool(str(item.get("path", "")).strip())
-        for name, item in model_config.items()
-    }
+    model_paths_configured = runtime.hot_switch.get_model_readiness()
 
     return {
         "ok": True,
@@ -178,6 +174,7 @@ def terminal_status(runtime: Runtime) -> dict:
         "hot_switch": runtime.hot_switch.get_config_summary(),
         "model_paths_configured": model_paths_configured,
         "task_control": runtime.task_control.capabilities(),
+        "mode": "simulation" if getattr(runtime, "simulation", False) else "normal",
     }
 
 
@@ -230,8 +227,8 @@ class RefereeCommandRequest(BaseModel):
         "PENALTY",
         "SCORE_QUERY",
     ]
-    countdown_s: float | None = Field(default=None, gt=0)
-    penalty_time_s: float = Field(default=0.0, ge=0)
+    countdown_s: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    penalty_time_s: float = Field(default=0.0, ge=0, allow_inf_nan=False)
     reason: str = Field(default="", max_length=300)
     score: Any = None
 
@@ -296,11 +293,11 @@ def health():
     """检查 Web 进程和 ROS 2 executor。"""
     runtime = require_runtime()
 
-    return {
-        "ok": True,
-        "ros_ok": rclpy.ok(),
-        "executor_thread_alive": runtime.spin_thread.is_alive(),
-    }
+    ros_ok = rclpy.ok()
+    alive = runtime.spin_thread.is_alive()
+    payload = {"ok": ros_ok and alive, "ros_ok": ros_ok,
+               "executor_thread_alive": alive}
+    return JSONResponse(payload, status_code=200 if payload["ok"] else 503)
 
 
 @app.get("/api/status")
@@ -313,13 +310,7 @@ def get_config():
     runtime = require_runtime()
     manager = runtime.hot_switch
 
-    return {
-        **manager.get_config_summary(),
-        "model_paths_configured": {
-            name: bool(str(item.get("path", "")).strip())
-            for name, item in manager.hot_config["models"].items()
-        },
-    }
+    return manager.get_config_summary()
 
 
 @app.post("/api/referee/command")
@@ -517,6 +508,8 @@ label{display:block;margin-top:10px}
 <main>
 <h1>M5-3 一体化操作终端</h1>
 <p class="muted">操作状态以业务模块和 ROS 2 实际反馈为准。</p>
+<p id="mode" class="warning"></p>
+<label>实验标识（可选，用于切换审计） <input id="experiment" maxlength="100"></label>
 <div id="notice" role="status" aria-live="polite"></div>
 
 <div class="grid">
@@ -526,10 +519,10 @@ label{display:block;margin-top:10px}
 <input id="countdown" type="number" min="1" placeholder="使用默认值">
 </label>
 <div>
-<button onclick="command('START')">START</button>
-<button onclick="command('PAUSE')">PAUSE</button>
-<button onclick="command('RESUME')">RESUME</button>
-<button onclick="command('STOP')">STOP</button>
+<button onclick="sendRefereeCommand('START')">START</button>
+<button onclick="sendRefereeCommand('PAUSE')">PAUSE</button>
+<button onclick="sendRefereeCommand('RESUME')">RESUME</button>
+<button onclick="sendRefereeCommand('STOP')">STOP</button>
 </div>
 <label>加罚时间（秒）
 <input id="penalty" type="number" min="0" value="0">
@@ -537,7 +530,8 @@ label{display:block;margin-top:10px}
 <label>加罚原因
 <input id="penaltyReason" maxlength="300" placeholder="原因">
 </label>
-<button onclick="command('PENALTY')">提交加罚</button>
+<button onclick="sendRefereeCommand('PENALTY')">提交加罚</button>
+<button onclick="sendRefereeCommand('SCORE_QUERY')">查询分数</button>
 </section>
 
 <section class="card">
@@ -558,12 +552,12 @@ label{display:block;margin-top:10px}
 </select>
 </label>
 <label>参数名称
-<select id="parameter"></select>
+<select id="parameter" onchange="updateParameterRange()"></select>
 </label>
 <label>参数值
 <input id="parameterValue" type="number" step="any" value="0.3">
 </label>
-<button id="parameterButton" onclick="setParameter()">更新参数</button>
+<button id="parameterButton" disabled onclick="setParameter()">更新参数</button>
 <p class="muted">实际节点未配置时，更新请求会被拒绝。</p>
 </section>
 
@@ -572,7 +566,7 @@ label{display:block;margin-top:10px}
 <label>模型
 <select id="model"></select>
 </label>
-<button id="modelButton" onclick="switchModel()">请求切换</button>
+<button id="modelButton" disabled onclick="switchModel()">请求切换</button>
 <p class="muted">修改模型路径参数不代表模型已经加载成功。</p>
 </section>
 
@@ -581,7 +575,7 @@ label{display:block;margin-top:10px}
 <label>场景
 <select id="scene"></select>
 </label>
-<button id="sceneButton" onclick="switchScene()">切换场景</button>
+<button id="sceneButton" disabled onclick="switchScene()">切换场景</button>
 <p class="muted">跨节点切换失败时会尝试恢复之前的参数。</p>
 </section>
 
@@ -604,21 +598,31 @@ label{display:block;margin-top:10px}
 
 <script>
 let terminalConfig = null;
+let refreshing = false;
 
 async function api(path, method="GET", body=null) {
   const options = {method, headers: {"Content-Type": "application/json"}};
   if (body !== null) options.body = JSON.stringify(body);
 
-  const response = await fetch(path, options);
-  const data = await response.json();
-
-  if (!response.ok) {
-    const detail = data.detail ?? data;
-    throw new Error(
-      typeof detail === "string" ? detail : JSON.stringify(detail)
-    );
+  const controller = new AbortController();
+  options.signal = controller.signal;
+  const timer = setTimeout(() => controller.abort(), method === "GET" ? 5000 : 30000);
+  try {
+    const response = await fetch(path, options);
+    const data = await response.json();
+    if (!response.ok) {
+      const detail = data.detail ?? data;
+      throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+    }
+    return data;
+  } catch (error) {
+    if (error.name === "AbortError") {
+      throw new Error("请求超时，执行结果未知，请刷新状态确认，勿重复提交");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
   }
-  return data;
 }
 
 function notice(message, error=false) {
@@ -633,6 +637,31 @@ function addOption(select, label, value, disabled=false) {
   option.value = value;
   option.disabled = disabled;
   select.appendChild(option);
+}
+
+function selectEnabled(select) {
+  const first = [...select.options].find(option => !option.disabled);
+  if (first) select.value = first.value;
+}
+
+function numericInput(id) {
+  const input = document.getElementById(id);
+  if (!input.value.trim() || !Number.isFinite(Number(input.value)) || !input.checkValidity()) {
+    throw new Error("请输入有效且在允许范围内的数值");
+  }
+  return Number(input.value);
+}
+
+function updateParameterRange() {
+  const target = document.getElementById("target").value;
+  const name = document.getElementById("parameter").value;
+  const bounds = terminalConfig?.parameter_ranges?.[target + "." + name];
+  const input = document.getElementById("parameterValue");
+  if (bounds) {
+    input.min = bounds.min;
+    input.max = bounds.max;
+    if (!input.value.trim() || !input.checkValidity()) input.value = bounds.min;
+  }
 }
 
 function updateParameterOptions() {
@@ -652,6 +681,7 @@ function updateParameterOptions() {
   const configured = !!terminalConfig.targets?.[target];
   document.getElementById("parameterButton").disabled =
     !configured || names.length === 0;
+  updateParameterRange();
 }
 
 async function loadConfig() {
@@ -662,38 +692,47 @@ async function loadConfig() {
     option.disabled = !terminalConfig.targets?.[option.value];
   }
 
+  selectEnabled(target);
+
   const model = document.getElementById("model");
   model.replaceChildren();
   for (const name of terminalConfig.models || []) {
     const ready = !!terminalConfig.model_paths_configured?.[name]
-      && !!terminalConfig.targets?.perception;
+      && !!terminalConfig.targets?.[terminalConfig.model_target];
     addOption(model, ready ? name : name + "（未配置）", name, !ready);
   }
 
   const scene = document.getElementById("scene");
   scene.replaceChildren();
   for (const name of terminalConfig.scenes || []) {
-    addOption(scene, name, name);
+    addOption(scene, name, name, !terminalConfig.scene_targets_configured?.[name]);
   }
   if (!scene.options.length) {
     addOption(scene, "尚未配置场景", "", true);
   }
 
+  selectEnabled(model);
+  selectEnabled(scene);
   document.getElementById("modelButton").disabled =
-    !terminalConfig.targets?.perception
+    !terminalConfig.targets?.[terminalConfig.model_target]
     || !(terminalConfig.models || []).some(
       name => terminalConfig.model_paths_configured?.[name]
     );
 
   document.getElementById("sceneButton").disabled =
-    !(terminalConfig.scenes || []).length;
+    !(terminalConfig.scenes || []).some(name => terminalConfig.scene_targets_configured?.[name]);
 
   updateParameterOptions();
 }
 
 async function refresh() {
+  if (refreshing) return;
+  refreshing = true;
   try {
+    if (!terminalConfig) await loadConfig();
     const data = await api("/api/status");
+    document.getElementById("mode").textContent = data.mode === "simulation"
+      ? "模拟演示：参数节点与控制器均为替身，不连接实车，不执行实际任务跳过。" : "";
     const capability = data.task_control;
     document.getElementById("taskCapability").textContent = capability.message;
     document.getElementById("skipButton").disabled =
@@ -709,22 +748,27 @@ async function refresh() {
     document.getElementById("status").textContent =
       JSON.stringify(data, null, 2);
   } catch (error) {
+    terminalConfig = null;
+    for (const id of ["parameterButton", "modelButton", "sceneButton", "skipButton"]) {
+      document.getElementById(id).disabled = true;
+    }
+    document.getElementById("summary").textContent = "连接中断，正在重试……";
     notice("状态读取失败：" + error.message, true);
+  } finally {
+    refreshing = false;
   }
 }
 
-async function command(name) {
+async function sendRefereeCommand(name) {
   try {
     const body = {command: name};
     const countdown = document.getElementById("countdown").value;
 
     if (name === "START" && countdown !== "") {
-      body.countdown_s = Number(countdown);
+      body.countdown_s = numericInput("countdown");
     }
     if (name === "PENALTY") {
-      body.penalty_time_s = Number(
-        document.getElementById("penalty").value
-      );
+      body.penalty_time_s = numericInput("penalty");
       body.reason = document.getElementById("penaltyReason").value;
     }
 
@@ -742,7 +786,8 @@ async function setParameter() {
     const data = await api("/api/parameters", "POST", {
       target: document.getElementById("target").value,
       parameter: document.getElementById("parameter").value,
-      value: Number(document.getElementById("parameterValue").value)
+      value: numericInput("parameterValue"),
+      experiment: document.getElementById("experiment").value.trim()
     });
     notice("参数更新成功：" + JSON.stringify(data.result));
   } catch (error) {
@@ -756,7 +801,7 @@ async function switchModel() {
   if (!model) return;
 
   try {
-    const data = await api("/api/models", "POST", {model_id: model});
+    const data = await api("/api/models", "POST", {model_id: model, experiment: document.getElementById("experiment").value.trim()});
     notice(data.message);
   } catch (error) {
     notice("模型切换失败：" + error.message, true);
@@ -769,7 +814,7 @@ async function switchScene() {
   if (!scene) return;
 
   try {
-    await api("/api/scenes", "POST", {scene_name: scene});
+    await api("/api/scenes", "POST", {scene_name: scene, experiment: document.getElementById("experiment").value.trim()});
     notice("场景切换完成");
   } catch (error) {
     notice("场景切换失败：" + error.message, true);
@@ -821,15 +866,8 @@ async function emergencyReset() {
   await refresh();
 }
 
-(async function init() {
-  try {
-    await loadConfig();
-    await refresh();
-    setInterval(refresh, 1500);
-  } catch (error) {
-    notice("终端初始化失败：" + error.message, true);
-  }
-})();
+refresh();
+setInterval(refresh, 1500);
 </script>
 </body>
 </html>
@@ -852,7 +890,7 @@ def main():
     if args.port < 1 or args.port > 65535:
         parser.error("端口必须在 1 到 65535 之间")
 
-    if args.match_duration_s <= 0:
+    if not math.isfinite(args.match_duration_s) or args.match_duration_s <= 0:
         parser.error("比赛默认时长必须大于 0")
 
     os.environ["M53_MATCH_DURATION_S"] = str(args.match_duration_s)

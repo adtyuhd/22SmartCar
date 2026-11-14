@@ -7,6 +7,7 @@ import fcntl
 import json
 import math
 import os
+import re
 import threading
 import time
 from datetime import datetime, timezone
@@ -132,7 +133,69 @@ class HotSwitchManager:
             if not isinstance(hot[key], dict):
                 raise ValueError(f"{key} 必须是字典")
 
+        def finite_number(value):
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return False
+            try:
+                return math.isfinite(value)
+            except OverflowError:
+                return False
+
+        def nonempty_string(value):
+            return isinstance(value, str) and bool(value.strip())
+
+        if not finite_number(hot["timeout_s"]) or hot["timeout_s"] <= 0:
+            raise ValueError("timeout_s 必须是有限的正数")
+        if not nonempty_string(hot["switch_log"]):
+            raise ValueError("switch_log 必须是非空路径")
+        operator = config.get("operator", {})
+        if not isinstance(operator, dict) or not nonempty_string(
+            operator.get("user_env", "M53_OPERATOR")
+        ):
+            raise ValueError("operator.user_env 必须是非空字符串")
+        targets = hot["parameter_targets"]
+        for alias, name in targets.items():
+            if not nonempty_string(alias) or not isinstance(name, str):
+                raise ValueError("parameter_targets 必须映射非空别名到节点名称字符串")
+            name = name.strip().rstrip("/") if name.strip() != "/" else "/"
+            if name and not re.fullmatch(r"/(?:[A-Za-z_][A-Za-z0-9_]*/)*[A-Za-z_][A-Za-z0-9_]*", name):
+                raise ValueError(f"无效的 ROS 2 节点绝对名称：{name}")
+            targets[alias] = name
+        if not nonempty_string(hot.get("model_target", "perception")) or hot.get("model_target", "perception") not in targets:
+            raise ValueError("model_target 必须引用 parameter_targets 中的别名")
+        if not nonempty_string(hot.get("model_parameter", "model_path")):
+            raise ValueError("model_parameter 必须是非空字符串")
+        for name, model in hot["models"].items():
+            if not nonempty_string(name) or not isinstance(model, dict) or not isinstance(model.get("path"), str):
+                raise ValueError("models 必须包含非空模型标识及字符串 path")
+        for key, bounds in hot["parameter_ranges"].items():
+            if not isinstance(key, str) or "." not in key or key.split(".", 1)[0] not in targets or not key.split(".", 1)[1].strip() or not isinstance(bounds, dict):
+                raise ValueError(f"无效的 parameter_ranges 条目：{key}")
+            numbers = [bounds.get("min"), bounds.get("max")]
+            if not all(finite_number(n) for n in numbers) or numbers[0] > numbers[1]:
+                raise ValueError(f"参数范围必须包含有限的 min <= max：{key}")
+        for name, scene in hot["scenes"].items():
+            parameters = scene.get("parameters") if isinstance(scene, dict) else None
+            if not nonempty_string(name) or not isinstance(parameters, dict) or not parameters:
+                raise ValueError("scenes 必须包含非空场景名及 parameters 映射")
+            for alias, values in parameters.items():
+                if alias not in targets or not isinstance(values, dict) or not values:
+                    raise ValueError(f"场景目标或参数映射无效：{name}/{alias}")
+                for parameter, value in values.items():
+                    scalar = isinstance(value, (bool, str)) or finite_number(value)
+                    if not nonempty_string(parameter) or not scalar:
+                        raise ValueError(f"场景只支持非空参数名称与有限标量：{name}/{alias}")
         return config
+
+    def get_model_readiness(self):
+        readiness = {}
+        for model in self.hot_config["models"]:
+            try:
+                self._resolve_model_path(model)
+                readiness[model] = True
+            except HotSwitchError:
+                readiness[model] = False
+        return readiness
 
     def get_config_summary(self):
         """返回适合 Web 界面展示的配置摘要。"""
@@ -143,6 +206,13 @@ class HotSwitchManager:
                 alias: bool(name)
                 for alias, name in
                 self.hot_config["parameter_targets"].items()
+            },
+            "model_target": self.hot_config.get("model_target", "perception"),
+            "model_paths_configured": self.get_model_readiness(),
+            "scene_targets_configured": {
+                name: all(bool(self.hot_config["parameter_targets"].get(alias))
+                          for alias in scene["parameters"])
+                for name, scene in self.hot_config["scenes"].items()
             },
             "parameter_ranges": self.hot_config["parameter_ranges"],
             "timeout_s": self.timeout_s,

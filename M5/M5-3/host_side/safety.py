@@ -16,6 +16,7 @@
 """
 
 import json
+from functools import wraps
 import threading
 import uuid
 from datetime import datetime, timezone
@@ -28,6 +29,14 @@ try:
     from .audit import AuditLogger
 except ImportError:
     from audit import AuditLogger
+
+
+def _serialized_command(method):
+    @wraps(method)
+    def call(self, *args, **kwargs):
+        with self._command_lock:
+            return method(self, *args, **kwargs)
+    return call
 
 
 class SafetyController:
@@ -48,6 +57,7 @@ class SafetyController:
         self.node = node
         self.audit_user = audit_user
         self._lock = threading.RLock()
+        self._command_lock = threading.RLock()
 
         # 主机侧安全状态。
         self._latched = False
@@ -252,6 +262,7 @@ class SafetyController:
             )
         )
 
+    @_serialized_command
     def trigger_emergency_stop(
         self,
         source="ui",
@@ -309,6 +320,7 @@ class SafetyController:
             )
 
         # 第二层：向小车端发出急停请求。
+        request_sent = False
         try:
             self._publish_robot_command(
                 action="STOP",
@@ -317,6 +329,7 @@ class SafetyController:
                 user=actor,
                 reason=reason,
             )
+            request_sent = True
         except Exception as exc:
             self.node.get_logger().error(
                 f"急停话题发布失败：{type(exc).__name__}: {exc}"
@@ -333,7 +346,7 @@ class SafetyController:
         audit_ok = self._write_audit(
             op="EMERGENCY_STOP",
             source=source,
-            result="requested",
+            result="requested" if request_sent else "publish_failed",
             from_value=(
                 "ESTOP_LATCHED" if was_latched else "NORMAL"
             ),
@@ -353,18 +366,20 @@ class SafetyController:
             )
 
         self._publish_host_status(
-            state="ESTOP_REQUESTED",
+            state="ESTOP_REQUESTED" if request_sent else "ESTOP_PUBLISH_FAILED",
             request_id=request_id,
-            message="急停请求已发出，等待小车端确认",
+            message=("急停请求已发出，等待小车端确认" if request_sent else
+                     "急停请求发布失败；主机保持锁存，尚未确认底盘停止"),
         )
 
         self.node.get_logger().warning(
-            f"急停请求已发出，request_id={request_id}；"
+            f"急停发布结果={request_sent}，request_id={request_id}；"
             "尚未确认底盘停止"
         )
 
-        return True
+        return request_sent
 
+    @_serialized_command
     def request_reset(
         self,
         manual_confirmation=False,
