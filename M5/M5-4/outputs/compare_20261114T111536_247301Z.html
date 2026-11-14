@@ -1,0 +1,11 @@
+<!doctype html><html lang="zh"><meta charset="utf-8"><title>实验对比</title>
+<style>body{font:16px system-ui;max-width:850px;margin:3rem auto;padding:0 1rem;color:#172235}
+label{display:block;margin:1rem 0}meter{width:65%;height:1.4rem;vertical-align:middle}</style>
+<h1>实验对比</h1><label>指标 <select id="metric"><option>nav_time</option><option>success_rate</option><option>cpu_peak</option></select></label><div id="chart"></div>
+<script>const data={"nav_time": [["demo_08", 17], ["demo_09", 21.666666666666668]], "success_rate": [["demo_08", 100.0], ["demo_09", 66.66666666666667]], "cpu_peak": [["demo_08", 24], ["demo_09", 25]]}, selector=document.querySelector('#metric'), chart=document.querySelector('#chart');
+function render(){const rows=data[selector.value], max=Math.max(1,...rows.map(r=>Math.abs(r[1]??0)));
+chart.replaceChildren(); for(const [name,value] of rows){const row=document.createElement('p');
+row.append(name+' '); if(value!==null){const meter=document.createElement('meter');
+meter.min=-max;meter.max=max;meter.value=value;meter.title=String(value);row.append(meter);}
+row.append(value===null?' 缺数据':' '+value.toFixed(3));chart.append(row);}}
+selector.addEventListener('change',render);render();</script></html>
