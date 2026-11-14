@@ -1,5 +1,6 @@
 """Create, run, compare and promote M5-4 experiments."""
 import argparse
+from contextlib import contextmanager
 from copy import deepcopy
 from datetime import datetime, timezone
 from hashlib import sha256
@@ -10,6 +11,8 @@ import re
 import statistics
 import subprocess
 import tempfile
+import sys
+import threading
 
 import yaml
 
@@ -128,6 +131,64 @@ def new(args):
     print(destination)
 
 
+def hot_load_ros(scene, settings, directory, name):
+    """Apply the resolved configuration through M5-3's audited scene switch."""
+    upstream = ROOT.parent / "M5-3"
+    terminal = read_config((ROOT / settings.get("terminal", "../M5-3/config/terminal.yaml")).resolve())
+    hot = terminal["hot_switch"]
+    parameters = {}
+    for alias, bindings in settings["bindings"].items():
+        values = {}
+        for parameter, key in bindings.items():
+            value = scene
+            for part in key.split("."):
+                value = value[part]
+            if key.startswith("models.") and key.endswith(".path"):
+                value = str((ROOT / value).resolve())
+            values[parameter] = value
+        parameters[alias] = values
+    if not parameters:
+        raise ValueError("runner.ros_hot_load.bindings 不能为空")
+    hot["scenes"] = {"m54_experiment": {"parameters": parameters}}
+    hot["switch_log"] = str(directory / "switch_log.csv")
+    terminal_path = directory / "m53_terminal.yaml"
+    write_config(terminal_path, terminal)
+
+    sys.path.insert(0, str(upstream / "host_side"))
+    try:
+        import rclpy
+        from rclpy.executors import SingleThreadedExecutor
+        from audit import AuditLogger
+        from hot_switch import HotSwitchManager
+
+        with _ros_context(rclpy):
+            node = rclpy.create_node("m54_experiment")
+            executor = SingleThreadedExecutor()
+            executor.add_node(node)
+            thread = threading.Thread(target=executor.spin, daemon=True)
+            thread.start()
+            try:
+                manager = HotSwitchManager(node, terminal_path, AuditLogger(log_dir=directory / "logs"))
+                manager.switch_scene("m54_experiment", source="cli", experiment=name)
+            finally:
+                executor.shutdown()
+                thread.join()
+                node.destroy_node()
+    except ImportError as exc:
+        raise ValueError("ROS 热加载需要 source ROS 2 setup.bash 并使用 ROS 对应的 Python") from exc
+    finally:
+        sys.path.remove(str(upstream / "host_side"))
+
+
+@contextmanager
+def _ros_context(rclpy):
+    rclpy.init()
+    try:
+        yield
+    finally:
+        rclpy.shutdown()
+
+
 def run(args):
     if args.runs < 1:
         raise ValueError("--runs 至少为 1")
@@ -135,8 +196,11 @@ def run(args):
     experiment(args.name)
     scene["models"] = model_info(scene)
     commands = scene.get("runner", {})
+    ros_settings = commands.get("ros_hot_load")
     if not args.replay_dir:
-        for key in ("hot_load", "run"):
+        if ros_settings is not None and commands.get("hot_load"):
+            raise ValueError("runner.hot_load 和 runner.ros_hot_load 只能配置一个")
+        for key in (("run",) if ros_settings is not None else ("hot_load", "run")):
             if not isinstance(commands.get(key), list) or not commands[key] or not all(isinstance(v, str) for v in commands[key]):
                 raise ValueError(f"现场运行需要配置 runner.{key} 命令数组")
     reports = ROOT / "outputs"
@@ -156,8 +220,15 @@ def run(args):
         if not args.replay_dir:
             directory.mkdir()
             values = {"config": str(effective), "run_dir": str(directory), "run_index": str(i)}
-            for key in ("hot_load", "run"):
-                subprocess.run([arg.format_map(values) for arg in commands[key]], cwd=ROOT, check=True)
+            if ros_settings is not None:
+                hot_load_ros(scene, ros_settings, directory, args.name)
+            else:
+                subprocess.run([arg.format_map(values) for arg in commands["hot_load"]], cwd=ROOT, check=True)
+            subprocess.run([arg.format_map(values) for arg in commands["run"]], cwd=ROOT, check=True)
+            missing = [key for key in ("blackbox.mcap", "logs", "switch_log.csv", "task_report.json")
+                       if not (directory / key).exists()]
+            if missing:
+                raise ValueError(f"第 {i} 把运行器未交齐数据：{', '.join(missing)}")
         if (git("rev-parse", "HEAD") != commit or model_info(scene) != scene["models"]
                 or digest(effective) != config_hash):
             raise ValueError("批次中 Git、模型或配置发生变化")
@@ -303,7 +374,7 @@ def main():
     args = parser.parse_args()
     try:
         {"new": new, "run": run, "compare": compare, "promote": promote}[args.command](args)
-    except (ValueError, OSError, KeyError, TypeError, subprocess.CalledProcessError, yaml.YAMLError) as exc:
+    except (ValueError, OSError, KeyError, TypeError, RuntimeError, subprocess.CalledProcessError, yaml.YAMLError) as exc:
         detail = exc.stderr.strip() if isinstance(exc, subprocess.CalledProcessError) and exc.stderr else str(exc)
         parser.exit(1, f"实验操作失败：{detail}\n")
 
