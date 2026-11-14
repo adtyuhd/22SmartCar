@@ -14,6 +14,7 @@ def test_terminal_lifecycle_and_real_parameter_services(tmp_path, monkeypatch):
 
     config = yaml.safe_load(terminal.DEFAULT_CONFIG.read_text())
     config["hot_switch"]["parameter_targets"]["navigation"] = "/m53_mock_navigation"
+    config["hot_switch"]["parameter_targets"]["perception"] = "/m53_service_missing"
     config["hot_switch"]["switch_log"] = str(tmp_path / "switch.csv")
     path = tmp_path / "terminal.yaml"
     path.write_text(yaml.safe_dump(config))
@@ -27,7 +28,10 @@ def test_terminal_lifecycle_and_real_parameter_services(tmp_path, monkeypatch):
         try:
             health = client.get("/health").json()
             assert health["ros_ok"] and health["executor_thread_alive"]
-            assert client.get("/api/status").json()["referee"]["status"] == "READY"
+            initial = client.get("/api/status").json()
+            assert initial["referee"]["status"] == "READY"
+            assert initial["mode"] == "normal"
+            assert client.get("/api/simulation").status_code == 404
             result = client.post("/api/parameters", json={"target": "navigation",
                 "parameter": "max_velocity", "value": 0.4})
             assert result.status_code == 200, result.text
@@ -35,6 +39,11 @@ def test_terminal_lifecycle_and_real_parameter_services(tmp_path, monkeypatch):
             assert client.post("/api/parameters", json={"target": "navigation",
                 "parameter": "max_velocity", "value": 2}).status_code == 409
             assert node.get_parameter("max_velocity").value == 0.4
+            runtime.hot_switch.timeout_s = 0.25
+            missing = client.post("/api/parameters", json={"target": "perception",
+                "parameter": "confidence_threshold", "value": 0.6})
+            assert missing.status_code == 409
+            assert "参数服务不可用" in missing.json()["detail"]
             assert client.post("/api/models", json={"model_id": "yolov8n_fp32"}).status_code == 409
             assert client.post("/api/referee/command", json={"command": "START"}).status_code == 200
             assert client.post("/api/referee/command", json={"command": "PAUSE"}).status_code == 200

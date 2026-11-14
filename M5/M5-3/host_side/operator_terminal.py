@@ -599,6 +599,7 @@ label{display:block;margin-top:10px}
 <script>
 let terminalConfig = null;
 let refreshing = false;
+let connectionFailed = false;
 
 async function api(path, method="GET", body=null) {
   const options = {method, headers: {"Content-Type": "application/json"}};
@@ -731,6 +732,8 @@ async function refresh() {
   try {
     if (!terminalConfig) await loadConfig();
     const data = await api("/api/status");
+    if (connectionFailed) notice("连接已恢复");
+    connectionFailed = false;
     document.getElementById("mode").textContent = data.mode === "simulation"
       ? "模拟演示：参数节点与控制器均为替身，不连接实车，不执行实际任务跳过。" : "";
     const capability = data.task_control;
@@ -748,6 +751,7 @@ async function refresh() {
     document.getElementById("status").textContent =
       JSON.stringify(data, null, 2);
   } catch (error) {
+    connectionFailed = true;
     terminalConfig = null;
     for (const id of ["parameterButton", "modelButton", "sceneButton", "skipButton"]) {
       document.getElementById(id).disabled = true;
