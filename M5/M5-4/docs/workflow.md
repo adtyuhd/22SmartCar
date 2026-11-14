@@ -27,3 +27,26 @@ tar -xzf outputs/baseline_package_demo.tar.gz -C "$verify_dir"
 3. run 不带 --replay-dir 时调用现场 runner。批次记录 Git HEAD、跟踪文件变更状态以及配置和模型哈希。统计各指标均值、总体方差和有效样本数。整把成功率的分母为完成批次的请求把数，分子只统计 SUCCESS。命令失败会中断批次，逐把报告仍保留。
 4. 根据对比结果选定实验，执行 `python scripts/exp.py promote --name <实验名> --to scene_race.yaml`。晋升验证已跑配置和模型内容，写入模型 SHA-256，并只提交目标场景。目标场景有本地改动时拒绝写入。纯回放演练可显式传入 --allow-replay，此命令会真正修改并提交目标场景。
 5. gen_baseline.py 也接受 --scene scene_race.yaml。验包要求模型数精确匹配、每个模型至少 1 字节，且所有模型和参数文件 SHA-256 一致。验包需要 shell、GNU coreutils 和 findutils。模型推理由上车流程验收。打包时显示字节数，样本包约 1.3 KB，生产包大小取决于模型。
+
+### 复用 M5-3 的 ROS 参数服务
+
+现场也可用下面的配置替代自定义 hot_load。先在 M5-3 终端配置的 parameter_targets 中填入实际 ROS 节点名。该终端配置应作为现场输入文件，由 runner.ros_hot_load.terminal 引用。路径相对于 M5-4。
+
+```yaml
+runner:
+  ros_hot_load:
+    terminal: /path/to/terminal.yaml
+    bindings:
+      navigation:
+        max_velocity: nav_speed
+  run: ["/path/to/runner", "{config}", "{run_dir}"]
+```
+
+bindings 按「M5-3 节点别名 → ROS 参数名 → M5-4 完整场景字段」映射。需要设置模型路径时，可绑定到 models.<模型名>.path，运行时会转换为绝对路径。参数服务的写入和回读由 M5-3 执行，并在每把目录生成 switch_log.csv 和审计日志。runner 应保留这些日志。模型推理就绪仍由现场 runner 确认。启动时先加载 ROS 环境，并使用对应的系统 Python。
+
+```bash
+source /opt/ros/humble/setup.bash
+/usr/bin/python3 scripts/exp.py run --name <已创建的实验名> --runs 3
+```
+
+现场计时应使用考官原始数据。开发验证对有块索引的 321 MiB 构造文件测得 0.05 秒，跳过 41 个无关块。此耗时取决于块索引、无关数据的分布及关键块的压缩情况。
