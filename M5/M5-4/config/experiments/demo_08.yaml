@@ -1,0 +1,7 @@
+base: scene_race.yaml
+base_sha256: b45e02eb4887349ddf107f584f654fc27c49b620db1f2f518a5abb59373682ff
+base_git: 5974f83fb17ce1d4b9756f1b464ba478ba28a34c
+created_at: '2026-11-14T11:15:35.944084+00:00'
+description: baseline replay
+expected: []
+overrides: {}
