@@ -4,6 +4,24 @@
 
 所有记录均来自本次实际调试过程，包括失败尝试、实际命令和测量结果，不额外编造故障。
 
+## 启动命令
+
+终端 1：
+
+```bash
+cd ~/22SmartCar/M1/M1-4
+source /opt/ros/humble/setup.bash
+PYTHONNOUSERSITE=1 /usr/bin/python3 camera_pub.py
+```
+
+终端 2：
+
+```bash
+cd ~/22SmartCar/M1/M1-4
+source /opt/ros/humble/setup.bash
+PYTHONNOUSERSITE=1 /usr/bin/python3 image_proc.py
+```
+
 ---
 
 ## 故障 1：NumPy 2.2.6 与 ROS Humble 的 cv_bridge 不兼容，节点无法启动
@@ -129,19 +147,19 @@ ImportError: numpy.core.multiarray failed to import
 
 我没有直接卸载 NumPy 2.2.6，因为本机还有其他软件可能依赖它。
 
-本实验运行 ROS 节点时使用：
+当时的修复是在运行命令中增加 `PYTHONNOUSERSITE=1`；当前展示还需指定系统 Python，使用：
 
 ```bash
-PYTHONNOUSERSITE=1 python3 camera_pub.py
+PYTHONNOUSERSITE=1 /usr/bin/python3 camera_pub.py
 ```
 
 处理端同样使用：
 
 ```bash
-PYTHONNOUSERSITE=1 python3 image_proc.py
+PYTHONNOUSERSITE=1 /usr/bin/python3 image_proc.py
 ```
 
-这样 Python 会忽略用户目录里的 NumPy 2.2.6，转而加载系统 NumPy 1.21.5。
+每个终端先执行 `source /opt/ros/humble/setup.bash`。上述命令使用系统 Python 3.10，并忽略用户目录里的 NumPy，加载系统 NumPy 1.21.5。
 
 ### ⑤ 验证
 

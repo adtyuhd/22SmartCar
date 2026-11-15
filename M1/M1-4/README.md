@@ -45,47 +45,60 @@ image_proc.py
 
 ---
 
-## 2. 运行环境问题
+## 2. 现场启动方式
 
-本机用户目录中安装了 NumPy 2.2.6，而 ROS Humble 当前的 `cv_bridge` 与该版本不兼容。
+每个终端都先加载 ROS Humble 环境。统一使用系统 Python `/usr/bin/python3`（Python 3.10），并通过 `PYTHONNOUSERSITE=1` 隔离用户级依赖。即使终端显示 `(base)`，也按以下命令运行。
 
-直接运行：
-
-```bash
-python3 camera_pub.py
-```
-
-会出现：
-
-```text
-AttributeError: _ARRAY_API not found
-
-ImportError: numpy.core.multiarray failed to import
-```
-
-本实验通过：
-
-```bash
-PYTHONNOUSERSITE=1
-```
-
-让 Python 使用系统 NumPy 1.21.5。
-
-因此实际运行命令为：
-
-### 终端 1
+### 终端 1：启动相机
 
 ```bash
 cd ~/22SmartCar/M1/M1-4
-PYTHONNOUSERSITE=1 python3 camera_pub.py
+source /opt/ros/humble/setup.bash
+PYTHONNOUSERSITE=1 /usr/bin/python3 camera_pub.py
 ```
 
-### 终端 2
+观察每 3 秒打印的 `[CAMERA]` 行，作为输入频率依据。
+
+### 终端 2：启动图像处理与控制
 
 ```bash
 cd ~/22SmartCar/M1/M1-4
-PYTHONNOUSERSITE=1 python3 image_proc.py
+source /opt/ros/humble/setup.bash
+PYTHONNOUSERSITE=1 /usr/bin/python3 image_proc.py
 ```
+
+观察 `[PROC]` 行，确认处理节点持续工作。
+
+### 终端 3：测量
+
+```bash
+cd ~/22SmartCar/M1/M1-4
+source /opt/ros/humble/setup.bash
+ros2 topic hz /perception/result
+```
+
+按 `Ctrl+C` 结束当前测量，再依次运行：
+
+```bash
+ros2 topic hz /control/cmd
+```
+
+```bash
+ros2 topic delay /perception/result
+```
+
+展示结束后，在终端 1、2 分别按 `Ctrl+C` 停止节点。
+
+### 环境自检
+
+```bash
+source /opt/ros/humble/setup.bash
+PYTHONNOUSERSITE=1 /usr/bin/python3 -c "import sys, numpy, rclpy; from cv_bridge import CvBridge; print('Python:', sys.executable); print('Version:', sys.version.split()[0]); print('NumPy:', numpy.__version__); print('ROS imports OK')"
+```
+
+应看到 `/usr/bin/python3`、Python `3.10` 和 `ROS imports OK`。
+
+请保留启动命令中的 `/usr/bin/python3`：裸写 `python3` 可能调用 Conda Python 3.14，导致 `ModuleNotFoundError: No module named 'rclpy._rclpy_pybind11'`。`PYTHONNOUSERSITE=1` 只禁用用户级依赖目录，不会切换解释器。历史上遇到的 NumPy 2.x 与 `cv_bridge` 不兼容问题也通过上述启动方式隔离。
 
 ---
 
