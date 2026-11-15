@@ -34,6 +34,29 @@ Python 3
 ~/22SmartCar/M3/M3-1/m3_ws
 ```
 
+## Python 环境：避免 Conda 与 ROS 2 冲突
+
+ROS 2 Humble 的 Python 扩展使用系统 Python 3.10。若终端激活了
+Conda `(base)`，`python3` 可能指向 Conda 中的其他版本，导致
+`ModuleNotFoundError: No module named 'rclpy._rclpy_pybind11'`。
+`source /opt/ros/humble/setup.bash` 不会自动切换 Python 解释器。
+
+每个用于编译、启动仿真或控制车辆的终端，都先执行：
+
+```bash
+export PATH="/usr/bin:$PATH"
+hash -r
+
+source /opt/ros/humble/setup.bash
+
+python3 --version
+/usr/bin/python3 -c "import rclpy; from lxml import etree; print('ROS 2 Python 依赖正常')"
+```
+
+应显示 Python 3.10.x 和“ROS 2 Python 依赖正常”。PATH 设置只影响当前
+终端，新开的终端需要重新执行。Gazebo 的 `spawn_entity.py` 通过 PATH
+查找 `python3`，因此仿真终端也必须使用系统 Python，否则可能只出现世界而没有车辆。
+
 ---
 
 # 2. 项目结构
@@ -161,6 +184,9 @@ cd ~/22SmartCar/M3/M3-1/m3_ws
 加载 ROS 2：
 
 ```bash
+export PATH="/usr/bin:$PATH"
+hash -r
+
 source /opt/ros/humble/setup.bash
 ```
 
@@ -192,6 +218,9 @@ Summary: 1 package finished
 
 ```bash
 cd ~/22SmartCar/M3/M3-1/m3_ws
+
+export PATH="/usr/bin:$PATH"
+hash -r
 
 source /opt/ros/humble/setup.bash
 source install/setup.bash
@@ -537,10 +566,13 @@ calibrated_turn_time
 ```bash
 cd ~/22SmartCar/M3/M3-1/m3_ws
 
+export PATH="/usr/bin:$PATH"
+hash -r
+
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 
-python3 scripts/square_driver.py \
+/usr/bin/python3 scripts/square_driver.py \
   --laps 1 \
   --side 2.0 \
   --speed 0.2 \
@@ -579,10 +611,13 @@ python3 scripts/square_driver.py \
 ```bash
 cd ~/22SmartCar/M3/M3-1/m3_ws
 
+export PATH="/usr/bin:$PATH"
+hash -r
+
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 
-python3 scripts/square_driver.py \
+/usr/bin/python3 scripts/square_driver.py \
   --laps 10 \
   --side 2.0 \
   --speed 0.2 \
@@ -1405,7 +1440,7 @@ heading_error
 执行：
 
 ```bash
-python3 scripts/analyze_10laps.py \
+/usr/bin/python3 scripts/analyze_10laps.py \
   --dir logs
 ```
 
@@ -1806,7 +1841,7 @@ sudo apt install -y python3.10-venv
 ```bash
 cd ~/22SmartCar/M3/M3-1/m3_ws
 
-python3 -m venv .plot_venv
+/usr/bin/python3 -m venv .plot_venv
 
 .plot_venv/bin/python -m pip install --upgrade pip
 
@@ -1875,6 +1910,9 @@ results/
 ```bash
 cd ~/22SmartCar/M3/M3-1/m3_ws
 
+export PATH="/usr/bin:$PATH"
+hash -r
+
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 
@@ -1886,10 +1924,13 @@ ros2 launch smart_car_description sim.launch.py
 ```bash
 cd ~/22SmartCar/M3/M3-1/m3_ws
 
+export PATH="/usr/bin:$PATH"
+hash -r
+
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 
-python3 scripts/square_driver.py \
+/usr/bin/python3 scripts/square_driver.py \
   --laps 10 \
   --side 2.0 \
   --speed 0.2 \
@@ -1900,7 +1941,7 @@ python3 scripts/square_driver.py \
 ## 统计
 
 ```bash
-python3 scripts/analyze_10laps.py \
+/usr/bin/python3 scripts/analyze_10laps.py \
   --dir logs
 ```
 
@@ -1917,13 +1958,16 @@ python3 scripts/analyze_10laps.py \
 
 ---
 
-# 51. 现场演示建议
+# 51. 现场演示
 
 现场演示时可以使用两个终端。
 
 终端 A：
 
 ```bash
+export PATH="/usr/bin:$PATH"
+hash -r
+
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 
@@ -1933,10 +1977,13 @@ ros2 launch smart_car_description sim.launch.py
 终端 B：
 
 ```bash
+export PATH="/usr/bin:$PATH"
+hash -r
+
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 
-python3 scripts/square_driver.py \
+/usr/bin/python3 scripts/square_driver.py \
   --laps 1 \
   --side 2.0 \
   --speed 0.2 \
