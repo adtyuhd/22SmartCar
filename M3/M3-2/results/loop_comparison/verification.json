@@ -5,8 +5,8 @@
   "identical_graph_scan_timestamps": true,
   "accepted_scans": 246,
   "primary_map": "maps/map.pgm",
-  "primary_map_variant": "loop_on",
-  "primary_map_sha256": "c08090f133136ba4b0e72290584bf3bd97c9862c963d8b3a3aa121be44fc25cd",
+  "primary_map_variant": "original_submission",
+  "primary_map_sha256": "8ae59120748eb00ecd7288e38aaf1cf5a6a0a85caac24fc53eadd9b6f4b09c7f",
   "map_server_checks": {
     "loop_on": {
       "result": 0,
@@ -22,5 +22,9 @@
       "resolution": 0.05000000074505806,
       "cells": 83412
     }
+  },
+  "comparison_maps": {
+    "loop_on": "maps/map_with_loop_on.pgm",
+    "loop_off": "maps/map_with_loop_off.pgm"
   }
 }

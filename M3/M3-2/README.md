@@ -13,14 +13,15 @@ ROS 2 Humble + Gazebo Classic + `slam_toolbox`。自建场景包含 8 m 长、2.
 | `worlds/scene.world` | 自建世界 |
 | `config/slam_params.yaml` | 开启回环的 SLAM 配置 |
 | `config/slam_params_loop_off.yaml` | 关闭回环的对照配置 |
-| `maps/map.pgm`、`maps/map.yaml` | 正式地图，回环开启 |
+| `maps/map.pgm`、`maps/map.yaml` | 原正式地图，保持原图 |
+| `maps/map_with_loop_on.pgm`、同名 YAML | 补充实验：回环开启 |
 | `maps/map_with_loop_off.pgm`、同名 YAML | 回环关闭地图 |
 | `bags/m3_2_full_run_20261010_044458/` | 原始 rosbag，430.33 s；交付时包含 `.db3` 和 `metadata.yaml` |
 | `results/quality_report.md` | 质量报告、图及数据对比 |
 | `results/loop_comparison/` | 参数快照、位姿图、CSV、对照图及量化结果 |
-| `maps/archive/` | 更换前的地图备份 |
+| `maps/archive/` | 原图备份 |
 
-正式地图为已有 rosbag 的重建结果，分辨率 0.05 m，尺寸 330 × 251。两组地图均通过 `map_server` 加载验证。
+正式地图沿用原图，分辨率 0.05 m，尺寸 327 × 247。以下为补充回环开关实验的结果，两组实验地图均通过 `map_server` 加载验证。
 
 | 指标 | 开启回环 | 关闭回环 |
 |---|---:|---:|
