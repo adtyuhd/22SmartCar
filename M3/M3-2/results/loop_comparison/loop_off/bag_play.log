@@ -1,0 +1,10 @@
+stdin is not a terminal device. Keyboard handling disabled.[INFO] [1794815026.510251501] [rosbag2_storage]: Opened database '/tmp/m3_2_compare_stage/results/loop_comparison/input_bag/input_bag_0.db3' for READ_ONLY.
+[INFO] [1794815026.510292680] [rosbag2_player]: Set rate to 2
+[WARN] [1794815026.512883568] [ROSBAG2_TRANSPORT]: Not all original publishers on topic /tf offered the same QoS profiles. Rosbag2 cannot yet choose an adapted profile to offer for this mixed case. Falling back to the rosbag2_transport default publisher offer.
+[INFO] [1794815026.515064498] [rosbag2_player]: Adding keyboard callbacks.
+[INFO] [1794815026.515080835] [rosbag2_player]: Press SPACE for Pause/Resume
+[INFO] [1794815026.515086678] [rosbag2_player]: Press CURSOR_RIGHT for Play Next Message
+[INFO] [1794815026.515092131] [rosbag2_player]: Press CURSOR_UP for Increase Rate 10%
+[INFO] [1794815026.515097213] [rosbag2_player]: Press CURSOR_DOWN for Decrease Rate 10%
+[INFO] [1794815026.515144014] [rosbag2_player]: Sleep 2000000000 ns
+[INFO] [1794815028.516318099] [rosbag2_storage]: Opened database '/tmp/m3_2_compare_stage/results/loop_comparison/input_bag/input_bag_0.db3' for READ_ONLY.

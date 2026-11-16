@@ -101,6 +101,9 @@ def generate_launch_description():
     spawn_robot = Node(
         package="gazebo_ros",
         executable="spawn_entity.py",
+        # 此脚本用 /usr/bin/env python3；Conda base 会将它导向不含
+        # ROS Humble/lxml 的 Python。显式使用 Ubuntu 系统解释器。
+        prefix=["/usr/bin/python3"],
         output="screen",
         arguments=[
             "-topic",

@@ -1,0 +1,50 @@
+[INFO] [1794815295.679702324] [map_server]: 
+	map_server lifecycle node launched. 
+	Waiting on external lifecycle transitions to activate
+	See https://design.ros2.org/articles/node_lifecycle.html for more information.
+[INFO] [1794815295.679873449] [map_server]: Creating
+[INFO] [1794815295.780922346] [map_server]: Configuring
+[INFO] [1794815295.781064213] [map_io]: Loading yaml file: /tmp/m3_2_compare_stage/maps/map_with_loop_on.yaml
+[INFO] [1794815295.781394606] [map_io]: resolution: 0.05
+[INFO] [1794815295.781401753] [map_io]: origin[0]: -8.16
+[INFO] [1794815295.781406053] [map_io]: origin[1]: -1.22
+[INFO] [1794815295.781410252] [map_io]: origin[2]: 0
+[INFO] [1794815295.781414161] [map_io]: free_thresh: 0.25
+[INFO] [1794815295.781417810] [map_io]: occupied_thresh: 0.65
+[INFO] [1794815295.781422691] [map_io]: mode: trinary
+[INFO] [1794815295.781427602] [map_io]: negate: 0
+[INFO] [1794815295.781656691] [map_io]: Loading image_file: /tmp/m3_2_compare_stage/maps/map_with_loop_on.pgm
+[INFO] [1794815295.788130587] [map_io]: Read map /tmp/m3_2_compare_stage/maps/map_with_loop_on.pgm: 330 X 251 map @ 0.05 m/cell
+[INFO] [1794815295.792271417] [map_server]: Activating
+[INFO] [1794815295.792482705] [map_server]: Creating bond (map_server) to lifecycle manager.
+[INFO] [1794815295.857095754] [map_server]: Handling LoadMap request
+[INFO] [1794815295.857189440] [map_io]: Loading yaml file: /tmp/m3_2_compare_stage/maps/map_with_loop_on.yaml
+[INFO] [1794815295.857388830] [map_io]: resolution: 0.05
+[INFO] [1794815295.857399505] [map_io]: origin[0]: -8.16
+[INFO] [1794815295.857406451] [map_io]: origin[1]: -1.22
+[INFO] [1794815295.857412876] [map_io]: origin[2]: 0
+[INFO] [1794815295.857419551] [map_io]: free_thresh: 0.25
+[INFO] [1794815295.857426247] [map_io]: occupied_thresh: 0.65
+[INFO] [1794815295.857432431] [map_io]: mode: trinary
+[INFO] [1794815295.857438696] [map_io]: negate: 0
+[INFO] [1794815295.857457569] [map_io]: Loading image_file: /tmp/m3_2_compare_stage/maps/map_with_loop_on.pgm
+[INFO] [1794815295.862655550] [map_io]: Read map /tmp/m3_2_compare_stage/maps/map_with_loop_on.pgm: 330 X 251 map @ 0.05 m/cell
+[INFO] [1794815295.864188589] [map_server]: Handling LoadMap request
+[INFO] [1794815295.864224632] [map_io]: Loading yaml file: /tmp/m3_2_compare_stage/maps/map_with_loop_off.yaml
+[INFO] [1794815295.864332521] [map_io]: resolution: 0.05
+[INFO] [1794815295.864337112] [map_io]: origin[0]: -8.18
+[INFO] [1794815295.864339868] [map_io]: origin[1]: -1.24
+[INFO] [1794815295.864342574] [map_io]: origin[2]: 0
+[INFO] [1794815295.864345652] [map_io]: free_thresh: 0.25
+[INFO] [1794815295.864348418] [map_io]: occupied_thresh: 0.65
+[INFO] [1794815295.864350974] [map_io]: mode: trinary
+[INFO] [1794815295.864354692] [map_io]: negate: 0
+[INFO] [1794815295.864362982] [map_io]: Loading image_file: /tmp/m3_2_compare_stage/maps/map_with_loop_off.pgm
+[INFO] [1794815295.869547000] [map_io]: Read map /tmp/m3_2_compare_stage/maps/map_with_loop_off.pgm: 331 X 252 map @ 0.05 m/cell
+[INFO] [1794815295.874423057] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[INFO] [1794815295.874529533] [map_server]: Running Nav2 LifecycleNode rcl preshutdown (map_server)
+[INFO] [1794815295.874581072] [map_server]: Deactivating
+[INFO] [1794815295.874612534] [map_server]: Destroying bond (map_server) to lifecycle manager.
+[INFO] [1794815295.885123982] [map_server]: Cleaning up
+[INFO] [1794815295.885205320] [map_server]: Destroying bond (map_server) to lifecycle manager.
+[INFO] [1794815295.886566723] [map_server]: Destroying

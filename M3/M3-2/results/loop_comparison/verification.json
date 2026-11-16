@@ -1,0 +1,26 @@
+{
+  "only_changed_runtime_parameter": [
+    "do_loop_closing"
+  ],
+  "identical_graph_scan_timestamps": true,
+  "accepted_scans": 246,
+  "primary_map": "maps/map.pgm",
+  "primary_map_variant": "loop_on",
+  "primary_map_sha256": "c08090f133136ba4b0e72290584bf3bd97c9862c963d8b3a3aa121be44fc25cd",
+  "map_server_checks": {
+    "loop_on": {
+      "result": 0,
+      "width": 330,
+      "height": 251,
+      "resolution": 0.05000000074505806,
+      "cells": 82830
+    },
+    "loop_off": {
+      "result": 0,
+      "width": 331,
+      "height": 252,
+      "resolution": 0.05000000074505806,
+      "cells": 83412
+    }
+  }
+}

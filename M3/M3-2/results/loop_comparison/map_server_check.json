@@ -1,0 +1,16 @@
+{
+  "loop_on": {
+    "result": 0,
+    "width": 330,
+    "height": 251,
+    "resolution": 0.05000000074505806,
+    "cells": 82830
+  },
+  "loop_off": {
+    "result": 0,
+    "width": 331,
+    "height": 252,
+    "resolution": 0.05000000074505806,
+    "cells": 83412
+  }
+}

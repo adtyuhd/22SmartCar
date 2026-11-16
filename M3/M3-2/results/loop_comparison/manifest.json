@@ -1,0 +1,18 @@
+{
+  "input_message_counts": {
+    "/odom": 21401,
+    "/tf": 34270,
+    "/tf_static": 1,
+    "/clock": 4280,
+    "/scan": 4280
+  },
+  "removed_map_to_odom": 21517,
+  "source_bag": "/home/adtyuhd/22SmartCar/M3/M3-2/bags/m3_2_full_run_20261010_044458",
+  "replay_rate": 2.0,
+  "ros_domain_id": 181,
+  "backend": "sync_slam_toolbox_node",
+  "variable": "do_loop_closing",
+  "source_sha256": {
+    "m3_2_full_run_20261010_044458_0.db3": "75f89109b9184a1ed9536570e6cfe81bd0a32448d08db81bc1ac00674948c5fc"
+  }
+}
