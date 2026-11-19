@@ -13,20 +13,23 @@ import sys
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
+M3 = ROOT.parent
+EVIDENCE = ROOT.with_name('M3-4-evidence')
+
 
 
 def bootstrap():
     if os.environ.get('M34_READY') == '1':
         return
-    runtime = ROOT/'results/runtime'
+    runtime = EVIDENCE/'runtime'
     runtime.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
     env.update(PATH='/usr/bin:/bin:/usr/sbin:/sbin:'+env.get('PATH',''),
                PYTHONNOUSERSITE='1', PYTHONDONTWRITEBYTECODE='1', M34_READY='1',
                ROS_DOMAIN_ID='33', RMW_IMPLEMENTATION='rmw_cyclonedds_cpp',
                GAZEBO_MASTER_URI='http://127.0.0.1:11346',
-               ROS_LOG_DIR=str(ROOT/'results/ros-log'), TMPDIR=str(runtime),
-               MPLCONFIGDIR=str(ROOT/'results/mpl'), GAZEBO_LOG_PATH=str(runtime),
+               ROS_LOG_DIR=str(EVIDENCE/'ros-log'), TMPDIR=str(runtime),
+               MPLCONFIGDIR=str(EVIDENCE/'mpl'), GAZEBO_LOG_PATH=str(runtime),
                XDG_CACHE_HOME=str(runtime/'cache'), GAZEBO_MODEL_DATABASE_URI='')
     env.update(LIBGL_ALWAYS_SOFTWARE='1',QT_X11_NO_MITSHM='1')
     # Source existing overlays read-only; never build in another module.
@@ -40,7 +43,7 @@ def bootstrap():
 def args():
     from inject_obstacle import coordinates
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--planners',default='A,B')
+    p.add_argument('--planners',default='RPP,MPPI')
     p.add_argument('--runs',type=int,default=10)
     p.add_argument('--obstacle-at',type=coordinates,default=(2.5,-5.05),help='Gazebo world x,y')
     p.add_argument('--delay',type=float,default=3.0,help='simulation seconds after goal acceptance')
@@ -51,17 +54,17 @@ def args():
     p.add_argument('--baseline',action='store_true',help='no obstacle; record reference length')
     p.add_argument('--check',action='store_true',help='launch and check interfaces only')
     p.add_argument('--inspect',action='store_true',help='read live costmap / TF diagnostics without launching')
-    p.add_argument('--campaign',action='store_true',help='fresh complete reference/comparison/tuning/boundary campaign')
-    p.add_argument('--audit-existing',action='store_true',help='with --campaign, check existing real stages and regenerate artifacts without rerunning simulation')
     a=p.parse_args()
-    a.planners=a.planners.split(',')
+    aliases={'A':'RPP','B':'MPPI','B_tuned':'MPPI_tuned'}
+    a.planners=[aliases.get(v,v) for v in a.planners.split(',')]
     a.goal=tuple(float(v) for v in a.goal.split(','))
-    a.out=a.out.resolve()
-    if not a.out.is_relative_to(ROOT): p.error('all output must stay inside M3-4')
-    if not set(a.planners)<= {'A','B','B_tuned'}: p.error('planners: A,B,B_tuned')
+    a.delivery_out=a.out.resolve()
+    if a.delivery_out != ROOT/'results': p.error('use --out results/ to preserve the required delivery layout')
+    a.out=Path(os.environ.get('M34_RUN_DIR',str(EVIDENCE/'runs'/str(time.time_ns()))))
+    a.show_gui=True
+    if not set(a.planners)<= {'RPP','MPPI','MPPI_tuned'}: p.error('planners: A,B,B_tuned (RPP,MPPI,MPPI_tuned)')
     if len(set(a.planners))!=len(a.planners): p.error('duplicate planner names are not allowed')
-    if 'B_tuned' in a.planners and len(a.planners)>1 and not a.baseline: p.error('run tuned comparison separately')
-    if a.audit_existing and not a.campaign: p.error('--audit-existing requires --campaign')
+    if any(p.endswith('_tuned') for p in a.planners) and len(a.planners)>1 and not a.baseline: p.error('run tuned comparison separately')
     if len(a.goal)!=3 or not all(math.isfinite(v) for v in (*a.goal,*a.obstacle_at,a.obstacle_size,a.delay,a.timeout)):
         p.error('finite coordinates and numeric arguments required')
     if not 2<=a.delay<=4 or a.runs<1 or a.obstacle_size<=0 or a.timeout<=0: p.error('invalid delay/runs/size/timeout')
@@ -89,7 +92,7 @@ def trial(a, planner, run, folder):
     from nav2_msgs.msg import BehaviorTreeLog
     from nav_msgs.msg import Odometry, OccupancyGrid, Path as NavPath
     from gazebo_msgs.msg import ModelStates
-    from sensor_msgs.msg import LaserScan, Image
+    from sensor_msgs.msg import LaserScan, Image, JointState
     from rcl_interfaces.msg import Log
     from tf2_ros import Buffer, TransformListener
     from rclpy.time import Time
@@ -97,16 +100,16 @@ def trial(a, planner, run, folder):
     from eval_metrics import metrics, wrap
     import xml.etree.ElementTree as ET
     static_boxes=[]
-    for model in ET.parse(ROOT.parent/'M3-2/worlds/scene.world').findall('.//world/model'):
+    for model in ET.parse(M3/'M3-2/worlds/scene.world').findall('.//world/model'):
         size=model.find('link/collision/geometry/box/size')
         if size is not None:
             pose=[float(v) for v in model.findtext('pose').split()]
             dims=[float(v) for v in size.text.split()]
             static_boxes.append((model.attrib['name'],pose[0],pose[1],dims[0]/2,dims[1]/2))
 
-    config=ROOT/'config'/({'A':'planner_a_params.yaml','B':'planner_b_params.yaml','B_tuned':'planner_b_tuned.yaml'}[planner])
-    command=['ros2','launch',str(ROOT.parent/'M3-3/launch/bringup.launch.py'),
-             'gui:=false','rviz:=false','nav2_params:='+str(config)]
+    config=ROOT/'config'/({'RPP':'planner_a_params.yaml','MPPI':'planner_b_params.yaml','MPPI_tuned':'planner_b_tuned.yaml'}[planner])
+    command=['ros2','launch',str(M3/'M3-3/launch/bringup.launch.py'),
+             'gui:='+str(a.show_gui).lower(),'rviz:='+str(a.show_gui).lower(),'nav2_params:='+str(config)]
     row=dict(planner=planner,run=run,kind='baseline' if a.baseline else 'obstacle',success=0,
              reason='infrastructure_error',nav_sim_s='',nav_wall_s='',path_m='',extra_path_m='',
              smoothness_rad_m='',heading_rad_m='',path_source='gazebo_truth',obstacle_x=a.obstacle_at[0],obstacle_y=a.obstacle_at[1],
@@ -114,7 +117,7 @@ def trial(a, planner, run, folder):
              path_intersection=0,collision=0,events=str((folder/'events.jsonl').relative_to(a.out)),
              config_sha256=hashlib.sha256(config.read_bytes()).hexdigest())
     (folder/'manifest.json').write_text(json.dumps(dict(command=command,argv=sys.argv,config=config.read_text(),
-             map_sha256=hashlib.sha256((ROOT.parent/'M3-2/maps/map.pgm').read_bytes()).hexdigest(),
+             map_sha256=hashlib.sha256((M3/'M3-2/maps/map.pgm').read_bytes()).hexdigest(),
              metric='sum(abs(delta atan(0.28*kappa)))/distance; independent truth at 0.05m',
              script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
              start_utc=time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime())),indent=2))
@@ -135,6 +138,7 @@ def trial(a, planner, run, folder):
                 self.client=ActionClient(self,NavigateToPose,'/navigate_to_pose')
                 self.buffer=Buffer(); self.listener=TransformListener(self.buffer,self)
                 self.create_subscription(Odometry,'/odom',self.on_odom,10)
+                self.create_subscription(JointState,'/joint_states',self.on_joints,10)
                 self.create_subscription(ModelStates,'/gazebo/model_states',self.on_truth,10)
                 self.create_subscription(NavPath,'/plan',self.on_plan,10)
                 self.create_subscription(LaserScan,'/scan',self.on_scan,qos_profile_sensor_data)
@@ -151,6 +155,9 @@ def trial(a, planner, run, folder):
             def value(p):
                 q=p.orientation
                 return [p.position.x,p.position.y,math.atan2(2*(q.w*q.z+q.x*q.y),1-2*(q.y*q.y+q.z*q.z))]
+            def on_joints(self,msg):
+                if self.active:
+                    self.record('steering_joints', joints={n:p for n,p in zip(msg.name,msg.position) if 'steering_joint' in n})
             def on_odom(self,msg):
                 v=self.value(msg.pose.pose)
                 if self.active: self.odom.append(v)
@@ -233,6 +240,7 @@ def trial(a, planner, run, folder):
                         hits.append([px,py])
                 if hits and not self.detected:
                     self.detected=True; self.record('scan_detection',hits=hits)
+                    print('雷达已检测到新障碍。',flush=True)
                     self.snapshot('02_detected')
                 if self.active and self.sim()-self.last_record.get('scan',-1e9)>.5:
                     self.last_record['scan']=self.sim()
@@ -247,15 +255,25 @@ def trial(a, planner, run, folder):
             if 'process has died' in text:
                 raise RuntimeError('launch child died; inspect launch.log')
             if ('Managed nodes are active' in text and node.scan is not None and node.pose is not None
-                and node.client.server_is_ready() and node.image is not None):
+                and node.client.server_is_ready()):
                 try: node.buffer.lookup_transform('map','base_footprint',Time())
                 except Exception: continue
                 ready=True; break
         if not ready: raise RuntimeError('startup readiness timeout or launch exit')
+        from rcl_interfaces.srv import GetParameters
+        params=node.create_client(GetParameters,'/controller_server/get_parameters')
+        if not params.wait_for_service(timeout_sec=5): raise RuntimeError('parameter service unavailable')
+        request=GetParameters.Request(); request.names=['FollowPath.plugin']
+        pf=params.call_async(request); rclpy.spin_until_future_complete(node,pf,timeout_sec=5)
+        if not pf.done(): raise RuntimeError('plugin verification timed out')
+        plugin=pf.result().values[0].string_value
+        expected='nav2_mppi_controller::MPPIController' if planner.startswith('MPPI') else 'nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController'
+        if plugin!=expected: raise RuntimeError(f'wrong active plugin: {plugin}')
+        node.record('active_plugin',plugin=plugin)
         # Settle localization at the initial pose before accepting the goal.
         until=node.sim()+2; wall=time.monotonic()+15
         while node.sim()<until and time.monotonic()<wall: rclpy.spin_once(node,timeout_sec=.02)
-        node.record('ready',pose=node.pose)
+        node.record('ready',pose=node.pose,onboard_camera_available=node.image is not None)
         node.initial_truth=list(node.pose)
         initial_tf=node.buffer.lookup_transform('map','base_footprint',Time()).transform
         iq=initial_tf.rotation
@@ -264,6 +282,10 @@ def trial(a, planner, run, folder):
         node.record('initial_alignment',world=node.initial_truth,map=node.initial_map)
         if a.check:
             row['reason']='interfaces_ready'; return row
+        if a.baseline:
+            print(f'[无障碍参考] 接口就绪，自动发车：{planner} 第{run}/{a.runs}次；目标map={a.goal}；本阶段不生成障碍。',flush=True)
+        else:
+            print(f'[障碍测试] 接口就绪，自动发车：{planner} 第{run}/{a.runs}次；目标map={a.goal}；障碍world={a.obstacle_at}；延迟{a.delay}s。',flush=True)
         goal=NavigateToPose.Goal(); goal.pose.header.frame_id='map'; goal.pose.header.stamp=node.get_clock().now().to_msg()
         goal.pose.pose.position.x,goal.pose.pose.position.y=a.goal[:2]
         goal.pose.pose.orientation.z=math.sin(math.radians(a.goal[2])/2)
@@ -274,6 +296,7 @@ def trial(a, planner, run, folder):
         handle=future.result(); result=handle.get_result_async()
         node.active=True; start=node.sim(); wall_start=time.monotonic(); node.begin=start
         node.record('goal_accepted',goal=a.goal)
+        print('导航目标已接受，车辆开始执行。',flush=True)
         while not result.done() and node.sim()-start<a.timeout and time.monotonic()-wall_start<a.timeout*3:
             rclpy.spin_once(node,timeout_sec=.01)
             elapsed=node.sim()-start
@@ -297,6 +320,7 @@ def trial(a, planner, run, folder):
                 spawn(node,a.obstacle_at,a.obstacle_size)
                 node.injected=True; row['delay_actual']=node.sim()-start
                 node.record('spawn_complete',elapsed=row['delay_actual'])
+                print(f'障碍已生成：world={a.obstacle_at}，导航后{row["delay_actual"]:.2f}s；车辆已移动{metrics(node.odom)["path_m"]:.2f}m。',flush=True)
             if node.injected and node.pose:
                 if abs(node.pose[1]-a.obstacle_at[1])>.3: node.snapshot('03_detour')
                 if node.pose[0]>a.obstacle_at[0]+a.obstacle_size/2+.4: node.snapshot('04_passed')
@@ -345,57 +369,38 @@ def trial(a, planner, run, folder):
         stop(process); logfile.close()
 
 
+CONFIG_NAMES={'RPP':'planner_a_params.yaml','MPPI':'planner_b_params.yaml','MPPI_tuned':'planner_b_tuned.yaml'}
+
+
+def matching_baselines(a):
+    """Reuse successful measured references only when config hash and goal match."""
+    candidates=[EVIDENCE/'results/formal/baseline.csv']
+    candidates+=sorted((EVIDENCE/'runs').glob('*/baseline.csv'),reverse=True)
+    selected=[]
+    for planner in a.planners:
+        expected=hashlib.sha256((ROOT/'config'/CONFIG_NAMES[planner]).read_bytes()).hexdigest()
+        for file in candidates:
+            if not file.exists(): continue
+            found=[]
+            for row in csv.DictReader(file.open()):
+                if row['planner']!=planner or row['success']!='1' or row['config_sha256']!=expected:continue
+                events=(file.parent/row['events']).resolve()
+                if not events.is_file():continue
+                goal=None
+                with events.open() as fp:
+                    for line in fp:
+                        event=json.loads(line)
+                        if event['event']=='goal_accepted':goal=event['goal'];break
+                if goal is None or len(goal)!=3 or any(abs(x-y)>1e-9 for x,y in zip(goal,a.goal)):continue
+                row=dict(row);row['events']=os.path.relpath(events,a.out);found.append(row)
+            if len(found)>=3:
+                selected.extend(found[:3]);break
+    return selected
+
+
 def main():
     bootstrap()
     a=args(); a.out.mkdir(parents=True,exist_ok=True)
-    if a.campaign:
-        if a.out==ROOT/'results' and not a.audit_existing:
-            a.out=a.out/f'reproduction-{time.time_ns()}'
-            a.out.mkdir()
-        if not a.audit_existing and ((a.out/'benchmark.csv').exists() or (a.out/'baseline.csv').exists()):
-            raise SystemExit('campaign requires a fresh output directory; existing evidence is never overwritten')
-        common=['--out',str(a.out),'--obstacle-at',','.join(map(str,a.obstacle_at)),
-                '--obstacle-size',str(a.obstacle_size),'--delay',str(a.delay),
-                '--goal',','.join(map(str,a.goal)),'--timeout',str(a.timeout)]
-        def execute(extra,base=common):
-            if not a.audit_existing:
-                subprocess.run(['/usr/bin/python3',str(Path(__file__).resolve()),*base,*extra],check=True)
-        def check_stage(path,counts):
-            from collections import Counter
-            rr=list(csv.DictReader(path.open()))
-            if Counter(r['planner'] for r in rr)!=Counter(counts):
-                raise SystemExit(f'incomplete stage: {path}')
-            for r in rr:
-                events=path.parent/r['events']
-                if (not events.exists() or r['scan_detected']!='1' or r['path_intersection']!='1'
-                    or not r['delay_actual'] or not 2<=float(r['delay_actual'])<=4):
-                    raise SystemExit(f'invalid injection evidence in stage: {path}')
-            print(f'CHECKED {path}: {len(rr)} real attempts',flush=True)
-        execute(['--check','--planners','A','--runs','1'])
-        execute(['--baseline','--planners','A,B,B_tuned','--runs','1'])
-        refs=list(csv.DictReader((a.out/'baseline.csv').open()))
-        if len(refs)!=3 or not all(r['success']=='1' for r in refs):
-            raise SystemExit('reference stage failed; do not proceed to comparison')
-        execute(['--planners','A,B','--runs','10'])
-        check_stage(a.out/'benchmark.csv',{'A':10,'B':10})
-        from eval_metrics import summarize,plots,reports
-        original=list(csv.DictReader((a.out/'benchmark.csv').open()))
-        summary=summarize(original)
-        if any(summary[g]['attempts']!=10 for g in ('A','B')):
-            raise SystemExit('comparison stage has not completed ten attempts per scheme')
-        if summary['B']['successes']>summary['A']['successes']:
-            raise SystemExit('B was not poorer in this campaign; reassess tuning rather than claim unsupported improvement')
-        execute(['--planners','B_tuned','--runs','10'])
-        check_stage(a.out/'benchmark_tuned.csv',{'B_tuned':10})
-        boundaries=[('large_0p8',['--obstacle-size','0.8']),
-                    ('blocked_1p6',['--obstacle-size','1.6']),
-                    ('near_1p4',['--obstacle-at','1.4,-5.05'])]
-        for label,extra in boundaries:
-            execute(['--planners','A','--runs','3','--out',str(a.out/'boundaries'/label),*extra])
-            check_stage(a.out/'boundaries'/label/'benchmark.csv',{'A':3})
-        plots(a.out); audit=reports(a.out)
-        print(json.dumps({'output':str(a.out),'audit':audit},indent=2),flush=True)
-        return 0 if all(audit.values()) else 3
     if a.inspect:
         import rclpy
         from rclpy.qos import QoSProfile,DurabilityPolicy
@@ -420,22 +425,35 @@ def main():
             try: print(target,source,b.lookup_transform(target,source,Time()))
             except Exception as e: print(e)
         n.destroy_node(); rclpy.shutdown(); return 0
-    path=a.out/('baseline.csv' if a.baseline else 'benchmark_tuned.csv' if a.planners==['B_tuned'] else 'benchmark.csv')
+    path=a.out/('baseline.csv' if a.baseline else 'benchmark_tuned.csv' if any(p.endswith('_tuned') for p in a.planners) else 'benchmark.csv')
     existing=list(csv.DictReader(path.open())) if path.exists() else []
     if not a.check and any(r['planner'] in a.planners for r in existing):
         raise SystemExit(f'{path} already contains this planner; use a fresh --out to avoid mixing batches')
     reference_file=a.out/'baseline.csv'
+    missing=[]
+    if not a.baseline and not a.check:
+        refs=list(csv.DictReader(reference_file.open())) if reference_file.exists() else []
+        if not refs:
+            refs=matching_baselines(a)
+            if refs:
+                with reference_file.open('w') as fp:
+                    writer=csv.DictWriter(fp,fieldnames=list(refs[0])); writer.writeheader(); writer.writerows(refs)
+                print('复用配置、目标匹配的实测无障碍基线；不额外运行无障碍试次。',flush=True)
+        missing=[p for p in a.planners if not any(r['planner']==p and r['success']=='1' for r in refs)]
+        if missing:
+            print(f'先执行指定的{a.runs}次障碍测试；完成后为{missing}补测各3次无障碍参考，计算绕行长度。',flush=True)
     references=list(csv.DictReader(reference_file.open())) if reference_file.exists() else []
-    for planner in a.planners:
-        for run in range(1,a.runs+1):
+    for run in range(1,a.runs+1):
+        order = a.planners if run % 2 else list(reversed(a.planners))
+        for planner in order:
             folder=a.out/'raw'/f'{time.time_ns()}_{planner}_{run:02}'
             folder.mkdir(parents=True)
-            print(f'START {planner} {run}/{a.runs}: {folder}',flush=True)
+            print(f"START [{'无障碍参考' if a.baseline else '障碍测试'}] {planner} {run}/{a.runs}: {folder}",flush=True)
             row=trial(a,planner,run,folder)
             # Baseline is planner-specific and only measured successful runs count.
             refs=[float(r['path_m']) for r in references if r['kind']=='baseline' and r['planner']==planner
                   and str(r['success'])=='1']
-            if not a.baseline and refs and row['path_m']!='': row['extra_path_m']=float(row['path_m'])-sum(refs)/len(refs)
+            if not a.baseline and refs and row['success']==1 and row['path_m']!='': row['extra_path_m']=float(row['path_m'])-sum(refs)/len(refs)
             if not a.check:
                 with path.open('a') as fp:
                     writer=csv.DictWriter(fp,fieldnames=list(row))
@@ -445,6 +463,28 @@ def main():
             print(json.dumps(row,ensure_ascii=False),flush=True)
             if row['reason'].startswith('infrastructure_error'):
                 return 2  # Do not turn infrastructure failures into a fake 10-trial campaign.
+    if not a.baseline and not a.check:
+        if missing:
+            print('障碍测试已完成，现在补测无障碍参考；这个阶段不会生成障碍。',flush=True)
+            child_env=os.environ.copy(); child_env['M34_RUN_DIR']=str(a.out)
+            subprocess.run([sys.executable,str(Path(__file__).resolve()),'--baseline','--planners',','.join(missing),'--runs','3','--goal',','.join(map(str,a.goal)),'--out',str(a.delivery_out)],env=child_env,check=True)
+            references=list(csv.DictReader(reference_file.open())) if reference_file.exists() else []
+            for row in existing:
+                lengths=[float(r['path_m']) for r in references
+                         if r['planner']==row['planner'] and r['success']=='1' and r['path_m']!='']
+                if str(row['success'])=='1' and lengths and row['path_m']!='':
+                    row['extra_path_m']=float(row['path_m'])-sum(lengths)/len(lengths)
+            with path.open('w') as fp:
+                writer=csv.DictWriter(fp,fieldnames=list(existing[0]))
+                writer.writeheader(); writer.writerows(existing)
+            if any(not any(r['planner']==p and r['success']=='1' for r in references) for p in missing):
+                print('警告：部分规划器无成功参考，绕行长度留空；不能据此完成四指标比较。',flush=True)
+                return 2
+        if set(a.planners)=={'RPP','MPPI'} and a.runs==10:
+            from eval_metrics import export_delivery
+            export_delivery(a.out,a.delivery_out)
+        else:
+            print(f'本批记录已保存：{path}；保留results中的20次正式结果。',flush=True)
     return 0
 
 

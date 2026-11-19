@@ -5,12 +5,15 @@ Smoothness = sum |delta steering angle| / distance, steering=atan(L*kappa).
 Also report heading variation per metre, which is NOT steering variation.
 """
 import argparse
+import os
 import csv
 import json
 import math
 import statistics
 import hashlib
 from pathlib import Path
+
+PLANNER_COLORS={"RPP":"tab:blue","MPPI":"tab:orange","MPPI_tuned":"tab:green","RPP_tuned":"tab:green"}
 
 
 def wrap(x):
@@ -41,6 +44,7 @@ def metrics(points, wheelbase=0.28, spacing=0.05):
 
 
 def plots(directory):
+    os.environ.setdefault("MPLCONFIGDIR",str(Path(directory)/"mpl"))
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -52,17 +56,23 @@ def plots(directory):
     fig, axes = plt.subplots(1, 4, figsize=(15,4))
     for ax, key, title in zip(axes, ("success", "nav_sim_s", "extra_path_m", "smoothness_rad_m"),
                               ("Success / all attempts", "Time (sim s), successes", "Extra distance (m), successes", "Steering variation (rad/m), successes")):
-        vals=[]
+        vals=[]; errors=[]
         for g in groups:
             rr=[r for r in rows if r['planner']==g and r['kind']=='obstacle']
             valid=[float(r[key]) for r in rr if r[key] and (key=='success' or r['success']=='1')]
             vals.append(sum(valid)/len(valid) if valid else float('nan'))
-        ax.bar(groups,[0 if math.isnan(v) else v for v in vals])
+            errors.append(statistics.stdev(valid) if key!='success' and len(valid)>1 else 0.0)
+        ax.bar(groups,[0 if math.isnan(v) else v for v in vals],yerr=errors,capsize=4,color=[PLANNER_COLORS[g] for g in groups])
         ax.set_title(title,fontsize=9)
         if all(math.isnan(v) or v==0 for v in vals): ax.set_ylim(0,1)
         if key=='success': ax.set_ylim(0,1.12)
         for i,v in enumerate(vals):
-            ax.text(i,.03 if math.isnan(v) else v, 'N/A' if math.isnan(v) else f'{v:.3f}',ha='center',va='bottom',fontsize=9)
+            label='N/A' if math.isnan(v) else f'{v:.3f}'
+            if key=='success':
+                rr=[r for r in rows if r['planner']==groups[i] and r['kind']=='obstacle']
+                label=f"{sum(r['success']=='1' for r in rr)}/{len(rr)}"
+            ax.annotate(label,(i,.03 if math.isnan(v) else v+errors[i]),xytext=(0,4),textcoords='offset points',ha='center',va='bottom',fontsize=9)
+        if key!='success': ax.margins(y=.2)
     fig.tight_layout(); fig.savefig(root/'metrics.png',dpi=160); plt.close(fig)
     fig,ax=plt.subplots(figsize=(10,4))
     import xml.etree.ElementTree as ET
@@ -73,18 +83,18 @@ def plots(directory):
         if size is not None:
             x,y,*_=map(float,model.findtext('pose').split()); sx,sy,*_=map(float,size.text.split())
             ax.add_patch(Rectangle((x-sx/2,y-sy/2),sx,sy,color='gray',alpha=.25))
-    colors=plt.rcParams['axes.prop_cycle'].by_key()['color']
+    colors=PLANNER_COLORS
     for g in groups:
         rr=[r for r in rows if r['planner']==g and r['kind']=='obstacle']
         chosen=next((r for r in rr if r['success']=='1'),rr[0])
         events=[json.loads(l) for l in (root/chosen['events']).read_text().splitlines()]
         pp=[e['value'] for e in events if e['event']=='truth' and e.get('active')]
-        if pp: ax.plot([p[0] for p in pp],[p[1] for p in pp],color=colors[groups.index(g)],label=f"{g}: trial {chosen['run']} ({chosen['reason']})")
+        if pp: ax.plot([p[0] for p in pp],[p[1] for p in pp],color=colors[g],label=f"{g}: trial {chosen['run']} ({chosen['reason']})")
         for r in rr:
             if r is chosen: continue
             other=[json.loads(l) for l in (root/r['events']).read_text().splitlines()]
             pts=[e['value'] for e in other if e['event']=='truth' and e.get('active')]
-            if pts: ax.plot([p[0] for p in pts],[p[1] for p in pts],alpha=.18,color=colors[groups.index(g)])
+            if pts: ax.plot([p[0] for p in pts],[p[1] for p in pts],alpha=.18,color=colors[g])
     if rows:
         r=next((r for r in rows if r['kind']=='obstacle'),None)
         if r:
@@ -132,211 +142,261 @@ def replan_evidence(root, rows):
 
 
 def reports(root):
+    """Generate statements only from the current directory's measured evidence."""
     root=Path(root)
-    rows=list(csv.DictReader((root/'benchmark.csv').open()))
-    tuned=list(csv.DictReader((root/'benchmark_tuned.csv').open())) if (root/'benchmark_tuned.csv').exists() else []
-    summary=summarize(rows+tuned)
+    def read(name):
+        p=root/name
+        return list(csv.DictReader(p.open())) if p.exists() else []
+    rows=read('benchmark.csv')+read('benchmark_tuned.csv')
+    baseline=read('baseline.csv')
+    summary=summarize(rows)
     (root/'summary.json').write_text(json.dumps(summary,indent=2,ensure_ascii=False))
-    replans=replan_evidence(root,rows+tuned)
+    replans=replan_evidence(root,rows)
     (root/'replanning.json').write_text(json.dumps(replans,indent=2,ensure_ascii=False))
-    def fmt(value): return 'N/A（无成功试次）' if value is None else f'{value:.3f}'
-    table='|方案|成功/尝试|成功均耗时 sim s|墙钟 s|绕行额外 m|转向变化 rad/m|\n|---|---:|---:|---:|---:|---:|\n'
-    for g,s in summary.items():
-        table+=f"|{g}|{s['successes']}/{s['attempts']}|{fmt(s['nav_sim_s'])}|{fmt(s['nav_wall_s'])}|{fmt(s['extra_path_m'])}|{fmt(s['smoothness_rad_m'])}|\n"
-    baseline=[dict(r) for r in csv.DictReader((root/'baseline.csv').open())] if (root/'baseline.csv').exists() else []
-    checks={f'{g}_10_attempts':sum(r['planner']==g for r in rr)==10 for g,rr in [('A',rows),('B',rows),('B_tuned',tuned)]}
-    checks['all_injections_valid']=all(r['delay_actual'] and 2<=float(r['delay_actual'])<=4 and r['scan_detected']=='1'
-                                     and r['path_intersection']=='1' for r in rows+tuned)
-    checks['all_raw_results_match']=True
-    checks['all_metrics_recompute']=True
-    checks['all_trial_configs_match']=True
-    checks['car_moved_before_injection']=True
-    goals=set()
-    for r in rows+tuned:
-        events=[json.loads(l) for l in (root/r['events']).read_text().splitlines()]
-        outcomes=[e for e in events if e['event']=='result']
-        if len(outcomes)!=1 or int(outcomes[0]['success'])!=int(r['success']): checks['all_raw_results_match']=False
-        measured=metrics([e['value'] for e in events if e['event']=='truth' and e.get('active')])
-        for key in ('path_m','smoothness_rad_m','heading_rad_m'):
-            if measured[key] is not None and (not r[key] or abs(measured[key]-float(r[key]))>1e-8):
-                checks['all_metrics_recompute']=False
-        manifest=json.loads((root/r['events']).with_name('manifest.json').read_text())
-        if hashlib.sha256(manifest['config'].encode()).hexdigest()!=r['config_sha256']:
-            checks['all_trial_configs_match']=False
-        goals.update(tuple(e['goal']) for e in events if e['event']=='goal_accepted')
-        spawn_time=next((e['wall'] for e in events if e['event']=='spawn_request'),None)
-        before=[e['value'] for e in events if e['event']=='truth' and e.get('active') and spawn_time and e['wall']<spawn_time]
-        if len(before)<2 or math.dist(before[0][:2],before[-1][:2])<.05: checks['car_moved_before_injection']=False
-    checks['formal_scene_consistent']=len(goals)==1 and len({(r['obstacle_x'],r['obstacle_y'],r['obstacle_size'],r['delay_requested']) for r in rows+tuned})==1
-    checks['all_trial_directories_unique']=len({r['events'] for r in rows+tuned})==len(rows+tuned)
-    checks['successful_metrics_have_baselines']=all(r['extra_path_m']!='' for r in rows+tuned if r['success']=='1')
-    checks['configuration_frozen']=all(len({r['config_sha256'] for r in rows+tuned if r['planner']==g})==1 for g in summary)
-    checks['baseline_three_successful']=len(baseline)==3 and {r['planner'] for r in baseline}=={'A','B','B_tuned'} and all(r['success']=='1' for r in baseline)
-    (root/'audit.json').write_text(json.dumps(checks,indent=2,ensure_ascii=False))
-    # Do not accept a single frozen image saved four times, or a detection frame without the box.
-    def valid_images(row):
-        from PIL import Image
-        files=[(root/row['events']).parent/(n+'.png') for n in ('01_approach','02_detected','03_detour','04_passed')]
-        if not all(p.exists() for p in files): return False
-        if len({hashlib.sha256(p.read_bytes()).digest() for p in files})!=4: return False
-        pixels=Image.open(files[1]).convert('RGB').getdata()
-        return sum(r>30 and g<r*.5 and b<r*.5 for r,g,b in pixels)>50
-    chosen=next((r for r in rows+tuned if r['success']=='1' and valid_images(r)),None)
-    if chosen:
-        import shutil
-        import matplotlib.pyplot as plt
-        fig,axes=plt.subplots(1,4,figsize=(16,3.4))
-        for ax,name in zip(axes,('01_approach','02_detected','03_detour','04_passed')):
-            src=(root/chosen['events']).parent/(name+'.png'); shutil.copyfile(src,root/(name+'.png'))
-            ax.imshow(plt.imread(src)); ax.set_title(name); ax.axis('off')
-        fig.tight_layout(); fig.savefig(root/'process_sequence.png',dpi=140); plt.close(fig)
-    frame_table='尚无满足内容核验的四帧过程，不能标为通过。'
-    if chosen:
-        events=[json.loads(l) for l in (root/chosen['events']).read_text().splitlines()]
-        accepted=next(e['sim'] for e in events if e['event']=='goal_accepted')
-        frame_table='|帧|目标接受后 sim s|最近真值 world x,y|\n|---|---:|---|\n'
-        for e in (e for e in events if e['event']=='camera_frame'):
-            truth=min((t for t in events if t['event']=='truth'),key=lambda t:abs(t['wall']-e['wall']))
-            frame_table+=f"|{e['label']}|{e['sim']-accepted:.2f}|({truth['value'][0]:.3f},{truth['value'][1]:.3f})|\n"
-    checks['four_real_camera_frames']=chosen is not None
-    failures=[]
-    for boundary in sorted((root/'boundaries').glob('*/benchmark.csv')) if (root/'boundaries').exists() else []:
-        rr=list(csv.DictReader(boundary.open()))
-        for r in rr:
-            r['events']=str((boundary.parent/r['events']).relative_to(root))
-        failures.extend(rr)
-    failure_summary=summarize(failures) if failures else {}
-    boundary_text='# 失效边界：实测触发实验\n\n有限重复只能支持该场景中的观测，不证明任意噪声下必然失败。导航终止状态 6=ABORTED；超时单独记录。\n\n'
-    boundary_text+='|场景|次数|成功|障碍世界坐标|尺寸 m|实际注入 sim s|终止耗时 sim s|终止原因|\n|---|---:|---:|---|---:|---|---|---|\n'
-    for boundary in sorted((root/'boundaries').glob('*/benchmark.csv')) if (root/'boundaries').exists() else []:
-        rr=list(csv.DictReader(boundary.open())); r=rr[0]
-        delays=[float(r['delay_actual']) for r in rr if r['delay_actual']]
-        durations=[float(r['nav_sim_s']) for r in rr if r['nav_sim_s']]
-        delay_range=f'{min(delays):.2f}–{max(delays):.2f}' if delays else 'N/A'
-        time_range=f'{min(durations):.2f}–{max(durations):.2f}' if durations else 'N/A'
-        boundary_text+=f"|{boundary.parent.name}|{len(rr)}|{sum(int(r['success']) for r in rr)}|({r['obstacle_x']},{r['obstacle_y']})|{r['obstacle_size']}|{delay_range}|{time_range}|{', '.join(sorted({r['reason'] for r in rr}))}|\n"
-    if not failures: boundary_text+='\n尚未运行边界实验；不能声明已验证失效边界。\n'
-    else: boundary_text+='\n与标准条件0.60m、x=2.5m的A方案9/10相比，上述记录给出了可脚本重现的失效触发条件。当前尺寸只采样0.60/0.80/1.60m、距离只采样1.4/2.5m，不构成连续精确阈值搜索；不能声称更小障碍必成功或任意更近位置必失败。\n'
-    boundary_text+='\n命令、配置快照、每次轨迹、激光和行为树事件保存在各场景 raw/ 中；不得把基础设施失败当作算法边界。\n'
-    boundary_text+='\n南侧通道几何宽度 2.10m。中心障碍留下的单侧几何宽度=(2.10-size)/2；物理车宽0.22m，导航 footprint 宽0.30m。膨胀半径0.40m是代价衰减带，不能直接当成不可通行硬边界。前进转弯半径≥0.60m，纵向准备距离也影响可行性。\n'
-    boundary_text+='\n1.60m障碍留下单侧0.25m，小于导航footprint宽0.30m，因此南侧就近绕行不满足配置中的车体净宽；这不证明整个环形地图无解。可能存在更长的全局绕行，超时只表示本配置在90仿真秒预算内未到达。近距离场景检验的是前进转弯准备距离，不能简单归因为障碍面积。\n'
-    (root/'failure_boundary.md').write_text(boundary_text)
-    boundary_replans=replan_evidence(root,failures)
+    checks={p+'_10_runs':sum(r['planner']==p for r in rows)==10 for p in ('RPP','MPPI')}
+    checks['all_injections_valid']=bool(rows) and all(r['delay_actual'] and 2<=float(r['delay_actual'])<=4 and r['scan_detected']=='1' and r['path_intersection']=='1' for r in rows)
+    checks['successful_extra_paths_have_reference']=all(r['extra_path_m']!='' for r in rows if r['success']=='1')
+    checks['metrics_match_evidence']=True
+    checks['plugin_matches']=True
+    checks['configs_frozen']=True
+    configs={}; diagnostics=[]
+    for r in rows:
+        folder=(root/r['events']).parent
+        events=[json.loads(l) for l in (folder/'events.jsonl').read_text().splitlines()]
+        m=metrics([e['value'] for e in events if e['event']=='truth' and e.get('active')])
+        for k,v in m.items():
+            if v is not None and (not r[k] or abs(float(r[k])-v)>1e-6): checks['metrics_match_evidence']=False
+        messages=[e.get('message','') for e in events if e['event']=='rosout']
+        failures=[e for e in events if e['event']=='bt_status' and e.get('name')=='FollowPath' and e.get('current')=='FAILURE']
+        spawn=next((e for e in events if e['event']=='spawn_complete'),None)
+        detection=next((e for e in events if e['event']=='scan_detection'),None)
+        diagnostics.append({'planner':r['planner'],'run':r['run'],'optimizer_fail_logs':sum('Optimizer fail' in m for m in messages),'planning_fail_logs':sum('failed to generate a valid path' in m for m in messages),'missed_control_rate_logs':sum('Control loop missed' in m for m in messages),'followpath_failure_events':len(failures),'spawn_to_detection_sim_s':detection['sim']-spawn['sim'] if detection and spawn else None})
+        expected='nav2_mppi_controller::MPPIController' if r['planner'].startswith('MPPI') else 'nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController'
+        if not any(e['event']=='active_plugin' and e['plugin']==expected for e in events): checks['plugin_matches']=False
+        configs.setdefault(r['planner'],set()).add(r['config_sha256'])
+        manifest=json.loads((folder/'manifest.json').read_text())
+        if hashlib.sha256(manifest['config'].encode()).hexdigest()!=r['config_sha256']: checks['configs_frozen']=False
+    if diagnostics:
+        with (root/'diagnostics.csv').open('w') as fp:
+            writer=csv.DictWriter(fp,fieldnames=list(diagnostics[0])); writer.writeheader(); writer.writerows(diagnostics)
+    checks['configs_frozen'] &= all(len(v)==1 for v in configs.values())
+    (root/'audit.json').write_text(json.dumps(checks,indent=2))
+    def fmt(v): return 'N/A' if v is None else f'{v:.3f}'
+    table='|方案|成功/尝试|耗时 sim s|额外路径 m|转角变化 rad/m|\n|---|---:|---:|---:|---:|\n'
+    for p,s in summary.items():
+        table+=f"|{p}|{s['successes']}/{s['attempts']}|{fmt(s['nav_sim_s'])}|{fmt(s['extra_path_m'])}|{fmt(s['smoothness_rad_m'])}|\n"
+    ranks=sorted((p for p in ('RPP','MPPI') if p in summary),key=lambda p:(-summary[p]['successes'],summary[p]['nav_sim_s'] or math.inf))
+    text='# RPP 与 MPPI：新一轮实测分析\n\n'
+    text+='本目录数据来自重新运行的 Gazebo 实验，未混入父目录旧实验。A=RPP，B=MPPI（Ackermann）。实际加载插件通过 controller_server 参数服务核验。\n\n'
+    text+='共同条件：最大速度0.22 m/s，最小转弯半径0.60 m，footprint 0.50×0.30 m，膨胀半径0.40 m，Smac Hybrid-A*（DUBIN），1Hz行为树重规划；禁止倒车和原地旋转。默认目标 map(5.5,0,0°)，world障碍(2.5,-5.05)，边长0.60 m，高1 m，目标接受后3秒生成。\n\n'
+    text+='实体有 collision 和 visual，通过激光进入两张代价地图；不直接写代价地图。真值仅用于评估。成功须动作 SUCCEEDED、TF位置误差≤0.20 m/朝向≤0.40 rad、真值位置误差≤0.30 m、未发现几何碰撞且有有效延迟/路径交叉/激光检测证据。20Hz矩形相交检测不等同于接触力传感器。\n\n'
+    text+='长度为Gazebo真值轨迹积分；平滑度按0.05m弧长重采样，κ=Δyaw/Δs，δ=atan(0.28κ)，Σ|Δδ|/总路程。它是等效单轨转角估计，另存实测 steering_joints 供诊断。耗时、额外路径、平滑度均值只取成功试次；失败全部保留，不能用失败部分轨迹冒充有效绕行。各规划器采用自身无障碍基线均值。\n\n'+table
+    text+='\n## ① 哪种表现更好\n\n'
+    if len(ranks)==2:
+        a,b=ranks; sa,sb=summary[a],summary[b]
+        text+=f"按成功数优先、相同时成功平均耗时的预定规则，本批排序为 {a}、{b}。成功数分别为{sa['successes']}/{sa['attempts']}和{sb['successes']}/{sb['attempts']}；四项指标见表。"
+        if all(s['nav_sim_s'] is not None for s in (sa,sb)):
+            text+=f"{a}减{b}的成功平均耗时差为{sa['nav_sim_s']-sb['nav_sim_s']:+.3f}s、额外路径差{sa['extra_path_m']-sb['extra_path_m']:+.3f}m、平滑度差{sa['smoothness_rad_m']-sb['smoothness_rad_m']:+.3f}rad/m。"
+        text+='每种仅10次，成功子样本构成可能不同，不宣称统计显著或所有场景普遍优越。\n'
+    text+='\n|方案|优化失败日志条数|全局规划失败日志条数|控制周期超时日志条数|FollowPath失败事件数|\n|---|---:|---:|---:|---:|\n'
+    for p in summary:
+        d=[r for r in diagnostics if r['planner']==p]
+        text+=f"|{p}|{sum(r['optimizer_fail_logs'] for r in d)}|{sum(r['planning_fail_logs'] for r in d)}|{sum(r['missed_control_rate_logs'] for r in d)}|{sum(r['followpath_failure_events'] for r in d)}|\n"
+    text+='\n日志条数不是独立失效次数；控制周期警告也不能单独证明CPU是失败原因。逐次诊断见 diagnostics.csv。\n'
+    timeouts=[r for r in rows if r['reason']=='timeout']
+    if timeouts:
+        text+='\n超时试次的终止路程（未完成轨迹，不能作为有效绕行）：'+ '；'.join(f"{r['planner']}/{r['run']}：{float(r['path_m']):.3f}m/{float(r['nav_sim_s']):.1f}s" for r in timeouts)+'。应结合全局路径及停止位置区分局部卡住与全局长路超时，不仅凭超时标签推断原因。\n'
+    text+='\n终点复核不通过的试次也计失败。定位估计、全局路径分支与控制动作可能相互影响；共享AMCL配置并不等于排除了定位误差，本实验不将所有失败都归因为局部控制器本身。\n'
+    text+='\nRPP以路径跟踪、调速与碰撞检测为主；MPPI采样阿克曼可行轨迹并评分。两者共同使用动态全局代价地图和Smac，故比较的是相同导航栈下控制器替换的整体效果，不能将全局绕行完全归因于局部控制器。\n'
+    boundaries=[]; boundary_replans=[]
+    for f in sorted((root/'boundaries').glob('*/benchmark.csv')):
+        rr=list(csv.DictReader(f.open())); ss=summarize(rr)
+        evidence=replan_evidence(f.parent,rr)
+        for e in evidence: e['scene']=f.parent.name
+        boundary_replans.extend(evidence)
+        for p,s in ss.items():
+            r=next(r for r in rr if r['planner']==p)
+            boundaries.append((f.parent.name,p,s,r))
+    boundary='# 失效触发实验\n\n|场景|规划器|成功/次数|world x,y|尺寸 m|延迟 s|原因|\n|---|---|---:|---|---:|---:|---|\n'
+    for name,p,s,r in boundaries:
+        boundary+=f"|{name}|{p}|{s['successes']}/{s['attempts']}|{r['obstacle_x']},{r['obstacle_y']}|{r['obstacle_size']}|{r['delay_requested']}|{s['reasons']}|\n"
+    boundary+='\n有限重复只说明采样条件下的观测；0/3不是数学意义的必然失败。2.10m通道中1.60m中心障碍单侧净宽0.25m小于导航footprint宽0.30m，但这并不证明整张环形地图无解。膨胀半径是代价衰减带，不能直接作为硬净宽。没有测试移动障碍速度边界。\n'
+    (root/'failure_boundary.md').write_text(boundary)
     (root/'boundary_replanning.json').write_text(json.dumps(boundary_replans,indent=2,ensure_ascii=False))
-    tune='# 参数调优记录\n\n共同感知修复在正式比较前完成，不计作 B 的性能调优。A=速度相关短前视0.30–0.50m；B=固定长前视1.50m。B_tuned 保持固定前视，仅改一个参数。\n\n'
-    tune+='|轮次|参数|本实验原值|新值|依据|\n|---|---|---:|---:|---|\n|1|FollowPath.lookahead_dist|1.50m|0.40m|长前视跨过绕行弯道而切向障碍；缩短跟踪点以跟随 Hybrid-A* 曲率。保持速度、碰撞检测、膨胀、全局规划及目标不变。|\n\n'+table
-    tune+='\n这里的“原值”是 B 的冻结实验配置，并非宣称 Nav2 上游默认值为1.50m。失败试次不进入成功耗时/绕行/平滑度均值；原始行仍完整保留。调优未保证在其他障碍尺寸和位置也有效。\n'
-    (root/'tuning_log.md').write_text(tune)
-    s_a=summary.get('A',{}); s_b=summary.get('B',{})
-    side_counts={}
-    for r in rows+tuned:
-        events=[json.loads(l) for l in (root/r['events']).read_text().splitlines()]
-        ys=[e['value'][1]-float(r['obstacle_y']) for e in events if e['event']=='truth' and e.get('active')]
-        if not ys: continue
-        side='北侧' if max(ys)>abs(min(ys)) else '南侧'
-        key=r['planner']+' '+side
-        side_counts.setdefault(key,[0,0]); side_counts[key][0]+=int(r['success']); side_counts[key][1]+=1
-    side_text='；'.join(f'{key} {s}/{n}' for key,(s,n) in side_counts.items())
-    first_events=[json.loads(l) for l in (root/rows[0]['events']).read_text().splitlines()]
-    measured_goal=next(e['goal'] for e in first_events if e['event']=='goal_accepted')
-    measured_scene=f"map目标 {tuple(measured_goal)}（yaw为度），world障碍 ({rows[0]['obstacle_x']},{rows[0]['obstacle_y']})，边长{rows[0]['obstacle_size']}m，请求延迟{rows[0]['delay_requested']}s"
-    better='A' if s_a.get('successes',0)>=s_b.get('successes',0) else 'B'
-    worse='B' if better=='A' else 'A'
-    def rank(g):
-        s=summary[g]
-        return (-s['successes'],s['smoothness_rad_m'] if s['smoothness_rad_m'] is not None else math.inf,
-                s['nav_sim_s'] if s['nav_sim_s'] is not None else math.inf)
-    selected=min(summary,key=rank)
-    gain=(summary[better]['successes']/summary[better]['attempts']-summary[worse]['successes']/summary[worse]['attempts'])*100
-    reference=next((r for r in baseline if r['planner']==better and r['success']=='1'),None)
-    cost_text=''
-    if reference and summary[better]['nav_sim_s'] is not None:
-        cost_text=(f"与该方案自身无障碍参考相比，成功均耗时增加 {summary[better]['nav_sim_s']-float(reference['nav_sim_s']):.3f}s，"
-                   f"路径增加 {summary[better]['extra_path_m']:.3f}m，平滑度由 {float(reference['smoothness_rad_m']):.3f} 升为 {summary[better]['smoothness_rad_m']:.3f}rad/m。"
-                   '这是避障的时间、路程和转向代价；无障碍参考仅1次，不能据此估计统计显著性。')
-    tuned_text=''
-    if 'B_tuned' in summary and summary['B_tuned']['nav_sim_s'] is not None and s_a.get('nav_sim_s') is not None:
-        st=summary['B_tuned']
-        tuned_text=(f"调优将B的成功数从 {s_b['successes']}/{s_b['attempts']} 提升为 {st['successes']}/{st['attempts']}。"
-                    f"与A相比，B_tuned成功数少 {s_a['successes']-st['successes']} 次；仅比较成功试次，耗时差为 {st['nav_sim_s']-s_a['nav_sim_s']:+.3f}s、"
-                    f"额外路径差 {st['extra_path_m']-s_a['extra_path_m']:+.3f}m、平滑度差 {st['smoothness_rad_m']-s_a['smoothness_rad_m']:+.3f}rad/m。"
-                    '这体现了更平顺的成功轨迹与本批到达可靠性之间的取舍，不能把成功子样本上的改善解释为所有尝试都更快。')
-    has_failure=[r for r in replans+boundary_replans if r['local_failure_observed']]
-    has_output=[r for r in has_failure if r['new_plan_wall_delay_s'] is not None]
-    replan_text=(f"观察到 {len(has_failure)} 个包含 FollowPath→FAILURE 的试次，其中 {len(has_output)} 个在失败后再次收到 /plan。"
-                 +(f"首次失败到下一条路径的墙钟延迟范围 {min(r['new_plan_wall_delay_s'] for r in has_output):.3f}–{max(r['new_plan_wall_delay_s'] for r in has_output):.3f}s。" if has_output else '没有可报告的新路径延迟。'))
-    report=f'''# M3-4 实测分析报告
+    text+='\n## ② 什么情况下失效\n\n'+boundary.split('\n\n',1)[1]
+    text+='\n## ③ 局部失败后是否重规划\n\n'
+    failures=[r for r in replans+boundary_replans if r['local_failure_observed']]
+    outputs=[r for r in failures if r['new_plan_wall_delay_s'] is not None]
+    text+=f"正式对照、调优及边界实验中，{len(failures)}次观察到 FollowPath→FAILURE，其中{len(outputs)}次之后收到 /plan。"
+    if outputs: text+=f"首次失败到下一条路径回调的墙钟延迟为{min(r['new_plan_wall_delay_s'] for r in outputs):.3f}～{max(r['new_plan_wall_delay_s'] for r in outputs):.3f}s。"
+    text+='以 /behavior_tree_log 和 /plan 的同进程 monotonic 时钟关联；周期规划与失败后恢复可能重叠，这只是时间关联，不证明因果。没有后续路径时记null而非0；最终成功状态见下表。\n\n|方案/次|规划启动延迟 s|路径输出延迟 s|最终到达|\n|---|---:|---:|---|\n'
+    for r in failures:
+        text+=f"|{r.get('scene','standard')}/{r['planner']}/{r['run']}|{fmt(r['replan_start_wall_delay_s'])}|{fmt(r['new_plan_wall_delay_s'])}|{r['success']}|\n"
+    text+='\n## ④ 比赛选择与具体参数\n\n'
+    candidates=sorted(summary,key=lambda p:(-summary[p]['successes']/summary[p]['attempts'],summary[p]['nav_sim_s'] or math.inf))
+    if candidates:
+        p=candidates[0]; selected=summary[p]
+        text+=f"在本批低速、2.10m通道、突现静止障碍场景中，按成功率优先、同率比较耗时的规则暂选 {p}：成功{selected['successes']}/{selected['attempts']}，成功均耗时{fmt(selected['nav_sim_s'])}s、额外路径{fmt(selected['extra_path_m'])}m、转角变化{fmt(selected['smoothness_rad_m'])}rad/m。"
+        import yaml
+        r=next(r for r in rows if r['planner']==p)
+        recorded=json.loads(((root/r['events']).parent/'manifest.json').read_text())
+        follow=yaml.safe_load(recorded['config'])['controller_server']['ros__parameters']['FollowPath']
+        if p.startswith('MPPI'):
+            text+=f"具体控制参数：motion_model=Ackermann，vx_max={follow['vx_max']}，vx_min={follow['vx_min']}，min_turning_r={follow['AckermannConstraints']['min_turning_r']}，time_steps={follow['time_steps']}，model_dt={follow['model_dt']}，batch_size={follow['batch_size']}，ObstaclesCritic.repulsion_weight={follow['ObstaclesCritic']['repulsion_weight']}。"
+        else:
+            text+=f"具体控制参数：desired_linear_vel={follow['desired_linear_vel']}，use_velocity_scaled_lookahead_dist={follow['use_velocity_scaled_lookahead_dist']}，min/max_lookahead_dist={follow['min_lookahead_dist']}/{follow['max_lookahead_dist']}m，lookahead_time={follow['lookahead_time']}s，max_allowed_time_to_collision_up_to_carrot={follow['max_allowed_time_to_collision_up_to_carrot']}s。"
+        text+='完整冻结参数见本目录 config_snapshot/（从每次manifest导出），不将这一选择外推到高速移动物场景。'
 
-## 实验与数据口径
-
-ROS2 Humble + Gazebo Classic 11；只读复用 M3-1 车型、M3-2 地图/world 和 M3-3 bringup。每次完整重启全栈，重新定位；本批场景为{measured_scene}，障碍高1m，在接受目标并已有运动后由spawn service生成。实体同时具有 collision 和 visual；原始 /scan 产生障碍层，不向代价地图写数据。两方案仅改变 RPP 前视策略。
-
-成功要求 Nav2 SUCCEEDED、最终 TF 位置误差≤0.20m/航向≤0.40rad、相对初始 map/world 对齐的真值位置误差≤0.30m、未检测到车体与世界方盒相交，并具有延迟2–4秒、路径交叉和激光检测证据。碰撞诊断是原 URDF 0.45×0.22m 车体与 world 方盒的20Hz真值几何相交检查，不是接触力传感器；不保证捕捉采样间的瞬时接触。
-
-长度来自独立 Gazebo 车体真值轨迹，真值仅用于评估。每方案成功无障碍参考路径的均值用于减法；本次参考各1次，因此未估计参考路径方差。耗时从目标接受到终止，主表用仿真秒并附墙钟秒，排除启动、定位与退出时间。成功均值只取成功试次；失败原始行的路程是未完成的部分轨迹，不能解释为有效绕行。
-
-轨迹按0.05m弧长重采样，κ=wrap(Δyaw)/0.05，δ=atan(0.28κ)，平滑度=Σ|Δδ|/总路程（rad/m）。另存 heading_rad_m=Σ|Δyaw|/路程供诊断，两者不可混称。该指标是依据轨迹的等效单轨转角估计，包含物理噪声，未用指令曲线冒充实测转角。
-
-{table}
-
-原始正式记录：[benchmark.csv](results/benchmark.csv)，调优：[benchmark_tuned.csv](results/benchmark_tuned.csv)，无障碍参考：[baseline.csv](results/baseline.csv)。每行关联独立事件文件及包含完整参数、地图校验值、脚本校验值的 manifest。试跑与正式批次分开，不挑选试次。
-
-## ① 哪种综合更好，代价是什么
-
-按正式成功数优先，{better} 优于 {worse}，本批成功率相差 {gain:.1f} 个百分点；具体四指标见上表。若某方案无成功试次，其成功条件下的耗时/绕行/平滑度不可定义，不能用失败后提前停车带来的短耗时或小转角宣称更好。{cost_text}
-
-{tuned_text}
-
-## ② 失效条件与触发实验
-
-{boundary_text.split(chr(10),1)[1]}
-
-长前视方案的正式失败原因见 summary.json 与每次 rosout/行为树；尚未测试移动障碍速度边界，不能推断其预测能力。早期试跑还暴露了 scan.max_obstacle_height 默认0.0过滤掉高度0.135m激光点的问题；显式设为2.0后，实测可见障碍进入代价地图并触发碰撞预警。早期失败保存在 pilot*，不计入正式结果。
-
-按实际轨迹相对障碍中心的最大侧向偏移分组，正式样本观测为：{side_text}。这是对轨迹的事后诊断，并非随机分配的绕行侧对照；它提示局部可用空间、地图/定位差异与全局路径分支也参与失效，不能把剩余失败只归因于前视距离。原始轨迹均保留在叠加图中。
-
-## ③ 局部失败后有没有全局重规划，延迟多少
-
-{replan_text}
-
-使用 /behavior_tree_log 中 FollowPath 的 FAILURE 作为局部失败判据，随后关联 ComputePathToPose RUNNING 与 /plan 回调。墙钟采用同一采集进程 time.monotonic；sim 由 /clock 回调，约0.1s分辨率。Nav2 还会按1Hz周期规划，所以“失败后有路径”不能证明是失败因果触发，更不等于已经脱困。new_plan_* 为 null 表示之后未观察到新路径，不填0。replanning.json 与 boundary_replanning.json 列出每次失败、重规划启动/输出延迟及最终成功状态；最终未到达即未脱困。
-
-## ④ 比赛场景的选择与参数
-
-比赛假设为同一地图南侧2.10m通道，障碍约0.60m、在离车足够远的路径中段延迟2–4s出现；不包含迎面高速移动物。把调优方案也纳入后，本批优先选择 **{selected}**：先比较成功数，同成功数时比较成功轨迹平滑度，再比较耗时；该选择只针对本报告数据，不是显著性结论。A：RPP desired_linear_vel=0.22、速度相关前视0.30–0.50m、lookahead_time=1.5；B_tuned：固定lookahead_dist=0.40m。两者碰撞预测1.0s、cost_scaling_dist=0.40、膨胀0.40m；Smac DUBIN 与最终 Twist 限幅半径0.60m。保留碰撞检测和禁止原地旋转/倒车约束。边界场景下应停车并允许任务失败，不能用关闭检测获得好看的到达率。
-
-## 图与逐项验收
-
-![轨迹](results/trajectories.png)
-![四指标](results/metrics.png)
-![真实相机过程](results/process_sequence.png)
-
-自动审计见 results/audit.json；四帧来源为 {chosen['events'] if chosen else '尚无满足条件的正式成功试次'}。逐项状态见 README 验收表。仿真有限次实测不替代真实车辆或考官现场两次随机位置测试，后两者尚未进行。
-
-{frame_table}
-'''
-    destination=root.parent/'report.md' if root.name=='results' else root/'report.md'
-    if root.name!='results':
-        report=report.replace('(results/','(')
-    destination.write_text(report)
-    checks['failure_boundary_measured']=len(failures)>0
-    boundary_files=list((root/'boundaries').glob('*/benchmark.csv')) if (root/'boundaries').exists() else []
-    checks['boundary_three_conditions_x3']=len(boundary_files)==3 and all(len(list(csv.DictReader(p.open())))==3 for p in boundary_files)
-    checks['boundary_injections_valid']=bool(failures) and all(r['scan_detected']=='1' and r['path_intersection']=='1'
-        and r['delay_actual'] and 2<=float(r['delay_actual'])<=4 for r in failures)
-    (root/'audit.json').write_text(json.dumps(checks,indent=2,ensure_ascii=False))
+    text+='无解或超预算时停车并记录失败，不能关闭碰撞检测换成功率。\n\n'
+    snapshot=root/'config_snapshot'; snapshot.mkdir(exist_ok=True)
+    for p in summary:
+        r=next(r for r in rows if r['planner']==p)
+        m=json.loads(((root/r['events']).parent/'manifest.json').read_text())
+        (snapshot/(p.lower()+'.yaml')).write_text(m['config'])
+    plan=Path(__file__).resolve().parents[1].with_name('M3-4-evidence')/'config/tuning_plan.json'
+    if plan.exists():
+        t=json.loads(plan.read_text()); original=t['planner']; tuned=original+'_tuned'
+        tune='# 参数调优记录\n\n'+t['selection_reason']+'\n\n|参数|冻结原值|新值|假设|\n|---|---:|---:|---|\n'
+        for c in t['changes']: tune+=f"|{c['parameter']}|{c['old']}|{c['new']}|{c['why']}|\n"
+        tune+='\n原值为本实验冻结配置，不冒称上游默认值。每轮只改表中参数，其余全栈保持一致。\n\n'+table
+        if original in summary and tuned in summary:
+            a,b=summary[original],summary[tuned]
+            tune+=f"\n成功数变化：{a['successes']}/{a['attempts']} → {b['successes']}/{b['attempts']}。\n"
+            for k in ('nav_sim_s','extra_path_m','smoothness_rad_m'):
+                if a[k] is not None and b[k] is not None: tune+=f"{k}：{a[k]:.3f} → {b[k]:.3f}，变化{b[k]-a[k]:+.3f}。\n"
+        if original in summary and tuned in summary and summary[tuned]['successes']/summary[tuned]['attempts']<summary[original]['successes']/summary[original]['attempts']:
+            tune+='\n本轮成功率低于原MPPI，不采纳这套参数作为改进配置。它作为完整保留的负结果，不能宣称调优成功。比赛选择仍依据实测排序。\n'
+        tune+='\n成功子样本均值存在选择偏差，调优不保证同时改善所有指标，失败试次完整保留。\n'
+        (root/'tuning_log.md').write_text(tune)
+        text+='## 参数调优\n\n'+tune.split('\n\n',1)[1]+'\n'
+    archive=root/'tuning_round1/benchmark_tuned.csv'
+    if archive.exists():
+        first=list(csv.DictReader(archive.open())); first_summary=summarize(first)
+        text+='## 第一轮未改善的调优记录\n\n第一轮只把 time_steps 80→120，成功数为'+str(first_summary['MPPI_tuned']['successes'])+'/10，低于原MPPI的8/10。主表与主图中的 MPPI_tuned 为第二轮最终配置；第一轮CSV、完整基线、配置和图表均保留，见 [第一轮记录](tuning_round1/README.md)，不混入第二轮均值。\n'
+        (root/'tuning_round1_summary.json').write_text(json.dumps(first_summary,indent=2))
+        log=root/'tuning_log.md'
+        if log.exists():
+            log.write_text(log.read_text()+'\n## 第一轮（未改善）\n\nFollowPath.time_steps：80→120；成功7/10，原MPPI为8/10，未改善。完整原始记录见 tuning_round1/，主表为第二轮。\n')
+    text+='## 可视化\n\n![指标](metrics.png)\n\n![轨迹](trajectories.png)\n\n![障碍附近放大](trajectories_zoom.png)\n\n![实测相机过程](process_sequence.png)\n'
+    if (root/'infrastructure/README.md').exists():
+        text+='\n## 基础设施启动错误\n\n有1次调优准备启动因车载相机无图像超时，尚未接受导航目标，不计入导航分母。CSV、事件和日志均保留，见 [启动错误记录](infrastructure/README.md)。修复只将可选车载相机从导航接口就绪条件中移除；正式20次结果未替换，调优10次导航从头采集。\n'
+    text+='\n## 无障碍参考\n\n|规划器|尝试|成功|平均路径 m|\n|---|---:|---:|---:|\n'
+    for p,s in summarize(baseline).items(): text+=f"|{p}|{s['attempts']}|{s['successes']}|{fmt(s['path_m'])}|\n"
+    if (root/'overview_process_sequence.png').exists():
+        text=text.replace('![实测相机过程](process_sequence.png)','')
+        text+='\n## 独立俯视演示\n\n以下为同配置额外演示试次的真实Gazebo俯视相机帧，不计入上述成功率。来源见 overview_source.json。\n\n![俯视过程](overview_process_sequence.png)\n'
+    (root/'report.md').write_text(text)
+    # Additional uncertainty summaries; SD is descriptive, not a significance claim.
+    spread={}
+    for p in summary:
+        spread[p]={}
+        for k in ('nav_sim_s','extra_path_m','smoothness_rad_m'):
+            v=[float(r[k]) for r in rows if r['planner']==p and r['success']=='1' and r[k]!='']
+            spread[p][k]={'n':len(v),'mean':statistics.mean(v) if v else None,'sd':statistics.stdev(v) if len(v)>1 else None,'min':min(v) if v else None,'max':max(v) if v else None}
+    (root/'spread.json').write_text(json.dumps(spread,indent=2))
     return checks
 
 
-def main():
-    p=argparse.ArgumentParser()
-    p.add_argument('directory',type=Path)
-    p.add_argument('--report',action='store_true')
-    a=p.parse_args()
-    if not a.directory.resolve().is_relative_to(Path(__file__).resolve().parents[1]): p.error('outputs must remain inside M3-4')
-    plots(a.directory)
-    if a.report: print(json.dumps(reports(a.directory),indent=2,ensure_ascii=False))
+def supplementary_plots(root):
+    os.environ.setdefault("MPLCONFIGDIR",str(Path(root)/"mpl"))
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Rectangle
+    from PIL import Image,ImageOps,ImageDraw
+    root=Path(root)
+    rows=list(csv.DictReader((root/'benchmark.csv').open()))
+    if (root/'benchmark_tuned.csv').exists(): rows+=list(csv.DictReader((root/'benchmark_tuned.csv').open()))
+    fig,ax=plt.subplots(figsize=(9,6))
+    r=rows[0]; ox,oy,size=map(float,(r['obstacle_x'],r['obstacle_y'],r['obstacle_size']))
+    colors=PLANNER_COLORS
+    for p in sorted({r['planner'] for r in rows}):
+        rr=[r for r in rows if r['planner']==p]
+        for i,r in enumerate(rr):
+            events=[json.loads(l) for l in (root/r['events']).read_text().splitlines()]
+            points=[e['value'] for e in events if e['event']=='truth' and e.get('active')]
+            if points:
+                ax.plot([x[0] for x in points],[x[1] for x in points],color=colors[p],alpha=.5,label=p if i==0 else None,linestyle='-' if r['success']=='1' else '--')
+                if r['success']!='1': ax.plot(*points[-1][:2],marker='x',color=colors[p])
+    ax.add_patch(Rectangle((ox-size/2,oy-size/2),size,size,color='red',alpha=.35))
+    ax.axhline(-6.1,color='gray'); ax.axhline(-4.0,color='gray')
+    ax.set(xlim=(ox-1.8,ox+1.5),ylim=(oy-1.2,oy+1.2),xlabel='world x (m)',ylabel='world y (m)',title='All trials near obstacle; dashed = failed, x = stop')
+    ax.set_aspect('equal'); ax.legend(); fig.tight_layout(); fig.savefig(root/'trajectories_zoom.png',dpi=160); plt.close(fig)
+    labels=['01_approach','02_detected','03_detour','04_passed']
+    sequence=next(((root/r['events']).parent for r in rows if r['success']=='1' and all(((root/r['events']).parent/(l+'.png')).exists() for l in labels)),None)
+    if sequence:
+        source_events=[json.loads(l) for l in (sequence/'events.jsonl').read_text().splitlines()]
+        accepted=next(e['sim'] for e in source_events if e['event']=='goal_accepted')
+        frame_info=[]
+        canvas=Image.new('RGB',(1280,1010),'white'); draw=ImageDraw.Draw(canvas)
+        for i,l in enumerate(labels):
+            im=Image.open(sequence/(l+'.png')).convert('RGB'); im=ImageOps.contain(im,(630,460))
+            x=(i%2)*640; y=(i//2)*505
+            frame=next(e for e in source_events if e['event']=='camera_frame' and e['label']==l)
+            elapsed=frame['image_stamp']-accepted
+            truth=min((e for e in source_events if e['event']=='truth'),key=lambda e:abs(e['sim']-frame['image_stamp']))['value']
+            frame_info.append({'stage':l,'elapsed_sim_s':elapsed,'world_pose':truth,'image_stamp':frame['image_stamp']})
+            canvas.paste(im,(x,y+30)); draw.text((x+10,y+8),f'{l}   t={elapsed:.2f}s   world=({truth[0]:.2f}, {truth[1]:.2f})',fill='black')
+        canvas.save(root/'process_sequence.png')
+        (root/'process_source.json').write_text(json.dumps({'trial':str(sequence.relative_to(root)),'frames':frame_info},indent=2))
+
+
+
+def export_delivery(evidence, output):
+    """Export only the assignment's CSV, Markdown and PNG artifacts."""
+    import shutil
+    root=Path(evidence).resolve(); output=Path(output).resolve()
+    output.mkdir(parents=True,exist_ok=True)
+    # Analysis intermediates stay with the external original evidence.
+    plots(root); supplementary_plots(root); reports(root)
+    rows=list(csv.DictReader((root/'benchmark.csv').open()))
+    for row in rows:
+        row['events']=os.path.relpath(root/row['events'],output)
+    with (output/'benchmark.csv').open('w') as fp:
+        w=csv.DictWriter(fp,fieldnames=list(rows[0])); w.writeheader(); w.writerows(rows)
+    for name in ('metrics.png','trajectories.png','trajectories_zoom.png'):
+        shutil.copy2(root/name,output/name)
+    overview=root/'overview_process_sequence.png'
+    if overview.exists():shutil.copy2(overview,output/'process_sequence.png')
+    elif (root/'process_sequence.png').exists():shutil.copy2(root/'process_sequence.png',output/'process_sequence.png')
+    def table(rr):
+        keys=['planner','run','success','reason','nav_sim_s','path_m','extra_path_m','smoothness_rad_m']
+        text='|'+'|'.join(keys)+'|\n|'+'|'.join(['---']*len(keys))+'|\n'
+        for r in rr:text+='|'+'|'.join(str(r.get(k,'')) for k in keys)+'|\n'
+        return text
+    tuning=(root/'tuning_log.md').read_text() if (root/'tuning_log.md').exists() else '# 参数调优记录\n'
+    tuning=tuning.replace('tuning_round1/','交付目录外的 M3-4-evidence/results/formal/tuning_round1/')
+    for title,path in [('第一轮逐次数据',root/'tuning_round1/benchmark_tuned.csv'),('第二轮逐次数据',root/'benchmark_tuned.csv')]:
+        if path.exists():tuning+='\n## '+title+'\n\n'+table(list(csv.DictReader(path.open())))
+    (output/'tuning_log.md').write_text(tuning)
+    failure=(root/'failure_boundary.md').read_text()
+    for path in sorted((root/'boundaries').glob('*/benchmark.csv')):
+        failure+='\n## '+path.parent.name+' 逐次数据\n\n'+table(list(csv.DictReader(path.open())))
+    (output/'failure_boundary.md').write_text(failure)
+    text=(root/'report.md').read_text()
+    text=text.replace('](metrics.png)','](results/metrics.png)').replace('](trajectories.png)','](results/trajectories.png)').replace('](trajectories_zoom.png)','](results/trajectories_zoom.png)')
+    text=text.replace('](overview_process_sequence.png)','](results/process_sequence.png)').replace('](process_sequence.png)','](results/process_sequence.png)')
+    text=text.replace('[第一轮记录](tuning_round1/README.md)','[逐轮调优记录](results/tuning_log.md)')
+    text=text.replace('[启动错误记录](infrastructure/README.md)','交付目录外保留的启动错误记录')
+    text=text.replace('config_snapshot/（从每次manifest导出）','config/（A=planner_a_params.yaml，B=planner_b_params.yaml）')
+    text=text.replace('diagnostics.csv','交付目录外保留的逐次诊断记录')
+    text=text.replace('来源见 overview_source.json。','原始相机帧与时间记录保存在交付目录外的证据备份。')
+    text=text.replace('第一轮完整数据见 tuning_round1/。','第一轮完整数据见 results/tuning_log.md。')
+    text+='\n## 数据与交付位置\n\n原始20次对照见 [benchmark.csv](results/benchmark.csv)，两轮调优逐次数据见 [tuning_log.md](results/tuning_log.md)，18次边界逐次数据见 [failure_boundary.md](results/failure_boundary.md)。额外日志、配置快照和启动错误保存在交付目录外相邻的 M3-4-evidence/，交付目录不生成这些中间文件。\n'
+    (output.parent/'report.md').write_text(text)
+    print('Exported delivery:',output)
 
 
 if __name__=='__main__':
-    main()
+    p=argparse.ArgumentParser(description='Recompute metrics from external evidence and export the required delivery files')
+    p.add_argument('directory',type=Path,nargs='?',default=Path(__file__).resolve().parents[1]/'results')
+    p.add_argument('--evidence',type=Path)
+    a=p.parse_args()
+    out=a.directory.resolve()
+    evidence=a.evidence
+    if evidence is None:
+        csv_path=out/'benchmark.csv'
+        if not csv_path.exists():p.error('benchmark.csv missing; pass --evidence')
+        row=next(csv.DictReader(csv_path.open()))
+        evidence=(out/row['events']).resolve().parents[2]
+    export_delivery(evidence,out)

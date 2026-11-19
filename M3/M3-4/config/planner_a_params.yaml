@@ -1,4 +1,3 @@
-# Explicit scan height bounds: measured sensor is 0.135m above base footprint.
 ackermann_command_limiter:
   ros__parameters:
     command_timeout: 0.5
