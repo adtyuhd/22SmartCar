@@ -36,6 +36,9 @@ def bootstrap():
     command = ('source /opt/ros/humble/setup.bash\n'
                'source "$1/../M3-1/m3_ws/install/setup.bash"\n'
                'source "$1/../M3-3-deps/install/local_setup.bash"\n'
+               'if [[ -f "$1/../M3-3/install/local_setup.bash" ]]; then\n'
+               '  source "$1/../M3-3/install/local_setup.bash"\n'
+               'fi\n'
                'shift\nexec /usr/bin/python3 "$@"')
     os.execve('/bin/bash', ['bash','-c',command,'m34',str(ROOT),str(Path(__file__).resolve()),*sys.argv[1:]],env)
 

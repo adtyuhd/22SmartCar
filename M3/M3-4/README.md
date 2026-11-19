@@ -46,3 +46,5 @@ PYTHONDONTWRITEBYTECODE=1 python3 scripts/eval_metrics.py results/
 平滑度按0.05m弧长重采样，以δ=atan(0.28κ)计算单位距离转角变化；实际长度来自Gazebo真值，真值只用于评估。耗时、额外路径和平滑度均值只取成功试次，失败全部保留。
 
 原始证据目录 `../M3-4-evidence/` 为本机保留数据，不随本次交付提交；完整逐次指标保存在交付内的 CSV 和 Markdown 中。新机器运行时会自动建立新的证据目录。
+
+若 M3-3 启动文件使用 `m3_3_navigation` 包，须先完成 M3-3 构建；本脚本会自动加载其 `install/local_setup.bash`，无需在终端手动 source。
